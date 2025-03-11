@@ -59,9 +59,10 @@ public class SecurityConfiguration {
                                 new AntPathRequestMatcher("/api/auth/login-user-reset-password"),
                                 new AntPathRequestMatcher("/api/auth/reset-forgotten-password")
                         ).permitAll()
+                        .requestMatchers(new AntPathRequestMatcher("/api/auth/forgot-password")).authenticated() .anyRequest().permitAll()
                         .requestMatchers(new AntPathRequestMatcher("/api/auth/logout")).authenticated()
                         .requestMatchers(new AntPathRequestMatcher("/api/auth/user/**")).authenticated()
-                        .anyRequest().authenticated()
+                        .anyRequest().authenticated() .anyRequest().permitAll()
                 )
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
                 .cors()
@@ -74,7 +75,7 @@ public class SecurityConfiguration {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration corsConfiguration = new CorsConfiguration();
         corsConfiguration.addAllowedOriginPattern("*");
-        corsConfiguration.addAllowedOrigin("https://fd31-94-207-11-92.ngrok-free.app");
+        corsConfiguration.addAllowedOrigin("http://192.168.70.122:8080");
         corsConfiguration.addAllowedOrigin("http://localhost:3000");
         corsConfiguration.addAllowedMethod(HttpMethod.GET);
         corsConfiguration.addAllowedMethod(HttpMethod.POST);
