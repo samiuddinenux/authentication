@@ -59,7 +59,7 @@ public class SecurityConfiguration {
                                 new AntPathRequestMatcher("/api/auth/login-user-reset-password"),
                                 new AntPathRequestMatcher("/api/auth/reset-forgotten-password")
                         ).permitAll()
-                        .requestMatchers(new AntPathRequestMatcher("/api/auth/forgot-password")).authenticated() .anyRequest().permitAll()
+                        .requestMatchers(new AntPathRequestMatcher("/api/auth/forgot-password")).authenticated().anyRequest().permitAll()
                         .requestMatchers(new AntPathRequestMatcher("/api/auth/logout")).authenticated()
                         .requestMatchers(new AntPathRequestMatcher("/api/auth/user/**")).authenticated()
                         .anyRequest().authenticated() .anyRequest().permitAll()
