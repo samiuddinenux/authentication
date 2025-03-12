@@ -75,12 +75,8 @@ public class SecurityConfiguration {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration corsConfiguration = new CorsConfiguration();
 
-        // Allow specific origins
-        corsConfiguration.setAllowedOrigins(Arrays.asList(
-                "http://192.168.70.122:8080",
-                "http://localhost:3000",
-                "https://fd31-94-207-11-92.ngrok-free.app"
-        ));
+        // Temporarily allow all origins
+        corsConfiguration.addAllowedOriginPattern("*"); // Replaces specific origins
 
         // Allow necessary HTTP methods
         corsConfiguration.setAllowedMethods(Arrays.asList(
@@ -94,13 +90,13 @@ public class SecurityConfiguration {
         // Allow all headers
         corsConfiguration.setAllowedHeaders(Arrays.asList("*"));
 
-        // Allow credentials (set to false for now, adjust if needed)
+        // Must be false with wildcard
         corsConfiguration.setAllowCredentials(false);
 
         // Cache pre-flight requests for 1 hour
         corsConfiguration.setMaxAge(3600L);
 
-        // Debugging: Ensure CORS headers are sent
+        // Expose CORS headers for debugging
         corsConfiguration.setExposedHeaders(Arrays.asList("Access-Control-Allow-Origin", "Access-Control-Allow-Methods"));
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
