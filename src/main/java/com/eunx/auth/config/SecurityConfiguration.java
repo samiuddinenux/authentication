@@ -47,8 +47,9 @@ public class SecurityConfiguration {
                 .and()
                 .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 .and()
-                .authorizeRequests(auth -> auth
-                        .requestMatchers(new AntPathRequestMatcher("/api/auth/**", "OPTIONS")).permitAll()
+                .authorizeHttpRequests(auth -> auth
+                        // Fix: Use AntPathRequestMatcher with HttpMethod for OPTIONS
+                        .requestMatchers(new AntPathRequestMatcher("/**", "OPTIONS")).permitAll()
                         .requestMatchers(
                                 new AntPathRequestMatcher("/api/auth/register"),
                                 new AntPathRequestMatcher("/api/auth/login"),
@@ -73,16 +74,28 @@ public class SecurityConfiguration {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration corsConfiguration = new CorsConfiguration();
-        corsConfiguration.addAllowedOriginPattern("*");
-        corsConfiguration.addAllowedOrigin("https://fd31-94-207-11-92.ngrok-free.app");
-        corsConfiguration.addAllowedOrigin("http://localhost:3000");
+
+        // Explicitly allow frontend origins, including the server itself if needed
+        corsConfiguration.addAllowedOrigin("http://192.168.70.122:8080"); // Server as an allowed origin
+        corsConfiguration.addAllowedOrigin("http://localhost:3000"); // Common frontend origin
+        corsConfiguration.addAllowedOrigin("https://fd31-94-207-11-92.ngrok-free.app"); // If still relevant
+
+        // Allow necessary HTTP methods
         corsConfiguration.addAllowedMethod(HttpMethod.GET);
         corsConfiguration.addAllowedMethod(HttpMethod.POST);
         corsConfiguration.addAllowedMethod(HttpMethod.PUT);
         corsConfiguration.addAllowedMethod(HttpMethod.DELETE);
         corsConfiguration.addAllowedMethod(HttpMethod.OPTIONS);
+
+        // Allow all headers
         corsConfiguration.addAllowedHeader("*");
-        corsConfiguration.setAllowCredentials(false);
+
+        // Set to true if your frontend sends credentials (e.g., cookies or Authorization headers)
+        corsConfiguration.setAllowCredentials(false); // Change to true if credentials are needed
+
+        // Cache pre-flight requests for 1 hour
+        corsConfiguration.setMaxAge(3600L);
+
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", corsConfiguration);
         return source;

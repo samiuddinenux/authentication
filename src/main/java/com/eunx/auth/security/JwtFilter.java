@@ -3,6 +3,8 @@ package com.eunx.auth.security;
 import com.eunx.auth.config.JwtTokenProvider;
 import com.eunx.auth.service.BlacklistService;
 import io.jsonwebtoken.Claims;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -22,6 +24,8 @@ import java.util.stream.Collectors;
 
 @Component
 public class JwtFilter extends OncePerRequestFilter {
+
+    private static final Logger logger = LoggerFactory.getLogger(JwtFilter.class);
 
     @Autowired
     private JwtTokenProvider jwtTokenProvider;
@@ -49,6 +53,9 @@ public class JwtFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
+        logger.info("Request Method: {}, URI: {}, Origin: {}",
+                request.getMethod(), request.getRequestURI(), request.getHeader("Origin"));
+
         // Skip filter for public endpoints and OPTIONS requests
         if (shouldNotFilter(request)) {
             filterChain.doFilter(request, response);
@@ -56,28 +63,28 @@ public class JwtFilter extends OncePerRequestFilter {
         }
 
         String token = jwtTokenProvider.getTokenFromRequest(request);
-        System.out.println("Extracted Token: " + token);
+        logger.info("Extracted Token: {}", token);
 
         if (token != null) {
             try {
                 boolean isBlacklisted = blacklistService.isTokenBlacklisted(token);
-                System.out.println("Is Token Blacklisted: " + isBlacklisted);
+                logger.info("Is Token Blacklisted: {}", isBlacklisted);
                 if (isBlacklisted) {
                     response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Token has been invalidated");
                     return;
                 }
 
                 boolean isValid = jwtTokenProvider.validateToken(token);
-                System.out.println("Is Token Valid: " + isValid);
+                logger.info("Is Token Valid: {}", isValid);
                 if (isValid) {
                     Claims claims = jwtTokenProvider.getClaimsFromToken(token);
-                    System.out.println("Claims: " + claims);
+                    logger.info("Claims: {}", claims);
 
                     String username = jwtTokenProvider.getUsernameFromToken(token);
-                    System.out.println("Username from Token: " + username);
+                    logger.info("Username from Token: {}", username);
 
                     List<String> roles = (List<String>) claims.get("roles");
-                    System.out.println("Roles: " + roles);
+                    logger.info("Roles: {}", roles);
 
                     List<SimpleGrantedAuthority> authorities = roles.stream()
                             .map(SimpleGrantedAuthority::new)
@@ -86,20 +93,20 @@ public class JwtFilter extends OncePerRequestFilter {
                             new UsernamePasswordAuthenticationToken(username, null, authorities);
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                     request.setAttribute("username", username);
-                    System.out.println("Authentication set for username: " + username);
+                    logger.info("Authentication set for username: {}", username);
                 } else {
-                    System.err.println("Invalid or expired token");
+                    logger.error("Invalid or expired token");
                     response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid or expired token");
                     return;
                 }
             } catch (Exception e) {
-                System.err.println("Error validating token: " + e.getMessage());
+                logger.error("Error validating token: {}", e.getMessage());
                 e.printStackTrace();
                 response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid token");
                 return;
             }
         } else {
-            System.err.println("Token is missing in request");
+            logger.error("Token is missing in request");
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Token is missing");
             return;
         }
