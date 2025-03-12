@@ -17,6 +17,8 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.util.Arrays;
+
 @Configuration
 @EnableWebSecurity
 public class SecurityConfiguration {
@@ -48,7 +50,6 @@ public class SecurityConfiguration {
                 .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 .and()
                 .authorizeHttpRequests(auth -> auth
-                        // Fix: Use AntPathRequestMatcher with HttpMethod for OPTIONS
                         .requestMatchers(new AntPathRequestMatcher("/**", "OPTIONS")).permitAll()
                         .requestMatchers(
                                 new AntPathRequestMatcher("/api/auth/register"),
@@ -65,8 +66,7 @@ public class SecurityConfiguration {
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
-                .cors()
-                .and()
+                .cors().and() // Ensure CORS is explicitly enabled
                 .httpBasic();
         return http.build();
     }
@@ -75,26 +75,33 @@ public class SecurityConfiguration {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration corsConfiguration = new CorsConfiguration();
 
-        // Explicitly allow frontend origins, including the server itself if needed
-        corsConfiguration.addAllowedOrigin("http://192.168.70.122:8080"); // Server as an allowed origin
-        corsConfiguration.addAllowedOrigin("http://localhost:3000"); // Common frontend origin
-        corsConfiguration.addAllowedOrigin("https://fd31-94-207-11-92.ngrok-free.app"); // If still relevant
+        // Allow specific origins
+        corsConfiguration.setAllowedOrigins(Arrays.asList(
+                "http://192.168.70.122:8080",
+                "http://localhost:3000",
+                "https://fd31-94-207-11-92.ngrok-free.app"
+        ));
 
         // Allow necessary HTTP methods
-        corsConfiguration.addAllowedMethod(HttpMethod.GET);
-        corsConfiguration.addAllowedMethod(HttpMethod.POST);
-        corsConfiguration.addAllowedMethod(HttpMethod.PUT);
-        corsConfiguration.addAllowedMethod(HttpMethod.DELETE);
-        corsConfiguration.addAllowedMethod(HttpMethod.OPTIONS);
+        corsConfiguration.setAllowedMethods(Arrays.asList(
+                HttpMethod.GET.name(),
+                HttpMethod.POST.name(),
+                HttpMethod.PUT.name(),
+                HttpMethod.DELETE.name(),
+                HttpMethod.OPTIONS.name()
+        ));
 
         // Allow all headers
-        corsConfiguration.addAllowedHeader("*");
+        corsConfiguration.setAllowedHeaders(Arrays.asList("*"));
 
-        // Set to true if your frontend sends credentials (e.g., cookies or Authorization headers)
-        corsConfiguration.setAllowCredentials(false); // Change to true if credentials are needed
+        // Allow credentials (set to false for now, adjust if needed)
+        corsConfiguration.setAllowCredentials(false);
 
         // Cache pre-flight requests for 1 hour
         corsConfiguration.setMaxAge(3600L);
+
+        // Debugging: Ensure CORS headers are sent
+        corsConfiguration.setExposedHeaders(Arrays.asList("Access-Control-Allow-Origin", "Access-Control-Allow-Methods"));
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", corsConfiguration);
