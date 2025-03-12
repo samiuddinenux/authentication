@@ -50,7 +50,9 @@ public class SecurityConfiguration {
                 .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 .and()
                 .authorizeHttpRequests(auth -> auth
+                        // Permit pre-flight OPTIONS requests
                         .requestMatchers(new AntPathRequestMatcher("/**", "OPTIONS")).permitAll()
+                        // Permit these endpoints for all
                         .requestMatchers(
                                 new AntPathRequestMatcher("/api/auth/register"),
                                 new AntPathRequestMatcher("/api/auth/login"),
@@ -61,12 +63,14 @@ public class SecurityConfiguration {
                                 new AntPathRequestMatcher("/api/auth/login-user-reset-password"),
                                 new AntPathRequestMatcher("/api/auth/reset-forgotten-password")
                         ).permitAll()
+                        // Logout endpoint requires authentication
                         .requestMatchers(new AntPathRequestMatcher("/api/auth/logout")).authenticated()
+                        // Any user-specific endpoints require authentication
                         .requestMatchers(new AntPathRequestMatcher("/api/auth/user/**")).authenticated()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
-                .cors().and() // Ensure CORS is explicitly enabled
+                .cors().and() // Enable CORS with our custom configuration
                 .httpBasic();
         return http.build();
     }
@@ -74,11 +78,9 @@ public class SecurityConfiguration {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration corsConfiguration = new CorsConfiguration();
-
-        // Temporarily allow all origins
-        corsConfiguration.addAllowedOriginPattern("*"); // Replaces specific origins
-
-        // Allow necessary HTTP methods
+        // Allow all origins
+        corsConfiguration.addAllowedOriginPattern("*");
+        // Allow specific HTTP methods
         corsConfiguration.setAllowedMethods(Arrays.asList(
                 HttpMethod.GET.name(),
                 HttpMethod.POST.name(),
@@ -86,17 +88,13 @@ public class SecurityConfiguration {
                 HttpMethod.DELETE.name(),
                 HttpMethod.OPTIONS.name()
         ));
-
         // Allow all headers
         corsConfiguration.setAllowedHeaders(Arrays.asList("*"));
-
-        // Must be false with wildcard
+        // Credentials are not allowed with wildcard origins
         corsConfiguration.setAllowCredentials(false);
-
-        // Cache pre-flight requests for 1 hour
+        // Cache the pre-flight response for 1 hour
         corsConfiguration.setMaxAge(3600L);
-
-        // Expose CORS headers for debugging
+        // Expose headers for debugging if necessary
         corsConfiguration.setExposedHeaders(Arrays.asList("Access-Control-Allow-Origin", "Access-Control-Allow-Methods"));
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
