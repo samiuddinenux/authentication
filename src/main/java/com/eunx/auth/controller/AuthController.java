@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
 
 import javax.mail.MessagingException;
+import javax.servlet.http.HttpServletRequest;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -34,7 +35,6 @@ public class AuthController {
 
     @Value("${kyc.service.url:http://localhost:8081/api/kyc}")
     private String kycServiceUrl;
-
     @Autowired
     public AuthController(UserService userService, BlacklistService blacklistService,
                           JwtTokenProvider jwtTokenProvider, RestTemplate restTemplate) {
@@ -43,7 +43,6 @@ public class AuthController {
         this.jwtTokenProvider = jwtTokenProvider;
         this.restTemplate = restTemplate;
     }
-
     @PostMapping("/register")
     public ResponseEntity<ApiResponse<String>> register(@RequestBody UserRequest userRequest) {
         try {
@@ -133,10 +132,12 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<ApiResponse<LoginResponse>> login(@RequestBody LoginRequest loginRequest) {
+    public ResponseEntity<ApiResponse<LoginResponse>> login(@RequestBody LoginRequest loginRequest,
+                                                            HttpServletRequest request) {
         try {
-            log.info("Login attempt for username: {}", loginRequest.getUsername());
-            LoginResponse loginResponse = userService.authenticateUser(loginRequest);
+            String deviceInfo = getDeviceInfo(request);
+            log.info("Login attempt for username: {} from device: {}", loginRequest.getUsername(), deviceInfo);
+            LoginResponse loginResponse = userService.authenticateUser(loginRequest, deviceInfo);
             return ResponseEntity.ok(new ApiResponse<>(loginResponse, "Login successful", HttpStatus.OK.value()));
         } catch (CustomException e) {
             log.error("Login failed for username: {}. Error: {}", loginRequest.getUsername(), e.getMessage(), e);
@@ -144,17 +145,26 @@ public class AuthController {
                     .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
         }
     }
+
     @PostMapping("/refresh-token")
-    public ResponseEntity<ApiResponse<LoginResponse>> refreshToken(@RequestBody RefreshTokenRequest refreshTokenRequest) {
+    public ResponseEntity<ApiResponse<LoginResponse>> refreshToken(@RequestBody RefreshTokenRequest refreshTokenRequest,
+                                                                   HttpServletRequest request) {
         try {
-            log.info("Refreshing token for request");
-            LoginResponse loginResponse = userService.refreshAccessToken(refreshTokenRequest.getRefreshToken());
+            String deviceInfo = getDeviceInfo(request);
+            log.info("Refreshing token for request from device: {}", deviceInfo);
+            LoginResponse loginResponse = userService.refreshAccessToken(refreshTokenRequest.getRefreshToken(), deviceInfo);
             return ResponseEntity.ok(new ApiResponse<>(loginResponse, "Token refreshed", HttpStatus.OK.value()));
         } catch (CustomException e) {
             log.error("Token refresh failed: {}", e.getMessage(), e);
             return ResponseEntity.status(e.getStatus())
                     .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
         }
+    }
+
+    private String getDeviceInfo(HttpServletRequest request) {
+        String ipAddress = request.getRemoteAddr();
+        String userAgent = request.getHeader("User-Agent");
+        return "IP: " + ipAddress + ", User-Agent: " + (userAgent != null ? userAgent : "Unknown");
     }
 
     @PostMapping("/verify-2fa")

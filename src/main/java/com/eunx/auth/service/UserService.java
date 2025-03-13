@@ -29,7 +29,7 @@ import java.util.Random;
 public class UserService {
 
     private static final Logger log = LoggerFactory.getLogger(UserService.class);
-    private final Map<String, String> refreshTokenStore = new HashMap<>();
+
     @Autowired private UserRepository userRepository;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private JwtTokenProvider jwtTokenProvider;
@@ -40,7 +40,7 @@ public class UserService {
     private final Map<String, UserRequest> pendingRegistrations = new HashMap<>();
     private final Map<String, String> resetOtpStore = new HashMap<>();
     private final Map<String, String> pending2FALogins = new HashMap<>();
-
+    private final Map<String, DeviceSession> refreshTokenStore = new HashMap<>();
     public void preRegisterUser(UserRequest userRequest) throws MessagingException {
         log.debug("Pre-registering user: {}", userRequest.getUsername());
         if (!EmailUtil.isValidEmail(userRequest.getEmail())) {
@@ -73,7 +73,18 @@ public class UserService {
         emailUtil.sendOtpEmail(email, otp);
         log.info("OTP resent to {}: {}", email, otp);
     }
+    private static class DeviceSession {
+        private String refreshToken;
+        private String deviceInfo; // Could be IP, device ID, or user-agent
 
+        public DeviceSession(String refreshToken, String deviceInfo) {
+            this.refreshToken = refreshToken;
+            this.deviceInfo = deviceInfo;
+        }
+
+        public String getRefreshToken() { return refreshToken; }
+        public String getDeviceInfo() { return deviceInfo; }
+    }
     public String completeRegistration(String email, String otp) {
         log.debug("Completing registration for email: {} with OTP: {}", email, otp);
         if (otpStore.containsKey(email) && otpStore.get(email).equals(otp)) {
@@ -103,8 +114,8 @@ public class UserService {
         return String.valueOf(100000 + random.nextInt(900000));
     }
 
-    public LoginResponse authenticateUser(LoginRequest loginRequest) {
-        log.debug("Authenticating user: {}", loginRequest.getUsername());
+    public LoginResponse authenticateUser(LoginRequest loginRequest, String deviceInfo) {
+        log.debug("Authenticating user: {} from device: {}", loginRequest.getUsername(), deviceInfo);
         Users user = userRepository.findByUsername(loginRequest.getUsername());
         if (user == null || !passwordEncoder.matches(loginRequest.getPassword(), user.getPassword())) {
             log.warn("Invalid credentials for username: {}", loginRequest.getUsername());
@@ -115,36 +126,52 @@ public class UserService {
             throw new CustomException("Email not verified.", HttpStatus.FORBIDDEN);
         }
 
+        String username = user.getUsername();
         String accessToken;
-        String refreshToken = generateRefreshToken(user.getUsername());
-        refreshTokenStore.put(user.getUsername(), refreshToken);
+        String refreshToken = generateRefreshToken(username); // Direct call to instance method
+
+        DeviceSession existingSession = refreshTokenStore.get(username);
+        if (existingSession != null && !existingSession.getDeviceInfo().equals(deviceInfo)) {
+            blacklistService.blacklistToken(existingSession.getRefreshToken());
+            refreshTokenStore.remove(username);
+            try {
+                emailUtil.sendLoginAttemptNotification(user.getEmail(), deviceInfo);
+                log.info("Notified user {} of login attempt from new device: {}", username, deviceInfo);
+            } catch (MessagingException e) {
+                log.error("Failed to send notification to {}: {}", user.getEmail(), e.getMessage());
+            }
+            log.warn("Login attempt from new device rejected for user: {}", username);
+            throw new CustomException("Another device is already logged in. Previous session invalidated.", HttpStatus.CONFLICT);
+        }
+
+        refreshTokenStore.put(username, new DeviceSession(refreshToken, deviceInfo));
 
         if (user.isTwoFactorEnabled()) {
-            accessToken = jwtTokenProvider.generateToken(user.getUsername(), Collections.singletonList("TEMP_ROLE"), 600);
-            pending2FALogins.put(user.getUsername(), accessToken);
-            log.info("2FA required, temp token generated for {}: {}", user.getUsername(), accessToken);
+            accessToken = jwtTokenProvider.generateToken(username, Collections.singletonList("TEMP_ROLE"), 600);
+            pending2FALogins.put(username, accessToken);
+            log.info("2FA required, temp token generated for {}: {}", username, accessToken);
         } else {
-            accessToken = jwtTokenProvider.generateToken(user.getUsername(), user.getRoles());
-            log.info("User authenticated successfully: {}", user.getUsername());
+            accessToken = jwtTokenProvider.generateToken(username, user.getRoles());
+            log.info("User authenticated successfully: {}", username);
         }
         return new LoginResponse(accessToken, refreshToken, user.isTwoFactorEnabled());
     }
+
     private String generateRefreshToken(String username) {
-        return jwtTokenProvider.generateRefreshToken(username); // New method in JwtTokenProvider
+        return jwtTokenProvider.generateRefreshToken(username);
     }
 
-    // Refresh access token using refresh token
-    public LoginResponse refreshAccessToken(String refreshToken) {
+    public LoginResponse refreshAccessToken(String refreshToken, String deviceInfo) {
         if (!jwtTokenProvider.validateToken(refreshToken)) {
             log.warn("Invalid or expired refresh token");
             throw new CustomException("Invalid or expired refresh token.", HttpStatus.UNAUTHORIZED);
         }
 
         String username = jwtTokenProvider.getUsernameFromToken(refreshToken);
-        String storedRefreshToken = refreshTokenStore.get(username);
-        if (storedRefreshToken == null || !storedRefreshToken.equals(refreshToken)) {
-            log.warn("Refresh token not found or mismatched for username: {}", username);
-            throw new CustomException("Invalid refresh token.", HttpStatus.UNAUTHORIZED);
+        DeviceSession session = refreshTokenStore.get(username);
+        if (session == null || !session.getRefreshToken().equals(refreshToken) || !session.getDeviceInfo().equals(deviceInfo)) {
+            log.warn("Refresh token not found, mismatched, or from different device for username: {}", username);
+            throw new CustomException("Invalid refresh token or device mismatch.", HttpStatus.UNAUTHORIZED);
         }
 
         Users user = userRepository.findByUsername(username);
@@ -235,6 +262,8 @@ public class UserService {
             log.warn("Invalid token for logout: {}", token);
             throw new CustomException("Invalid token.", HttpStatus.UNAUTHORIZED);
         }
+        String username = jwtTokenProvider.getUsernameFromToken(token);
+        refreshTokenStore.remove(username);
         blacklistService.blacklistToken(token);
         log.info("User logged out successfully with token: {}", token);
     }
