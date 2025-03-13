@@ -1,249 +1,313 @@
 package com.eunx.auth.controller;
 
-import com.eunx.auth.dto.ChangePasswordRequest;
-import com.eunx.auth.dto.LoginRequest;
-import com.eunx.auth.dto.LoginResponse;
-import com.eunx.auth.dto.UserRequest;
+import com.eunx.auth.config.JwtTokenProvider;
+import com.eunx.auth.dto.*;
 import com.eunx.auth.entity.Users;
 import com.eunx.auth.exception.CustomException;
 import com.eunx.auth.service.BlacklistService;
 import com.eunx.auth.service.UserService;
-import com.eunx.auth.config.JwtTokenProvider;
 import org.slf4j.Logger;
-    import org.slf4j.LoggerFactory;
-    import org.springframework.beans.factory.annotation.Autowired;
-    import org.springframework.beans.factory.annotation.Value;
-    import org.springframework.http.HttpStatus;
-    import org.springframework.http.MediaType;
-    import org.springframework.http.ResponseEntity;
-    import org.springframework.security.core.Authentication;
-    import org.springframework.web.bind.annotation.*;
-    import org.springframework.web.client.RestTemplate;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.client.RestTemplate;
 
-    import javax.mail.MessagingException;
-    import java.util.HashMap;
-    import java.util.Map;
+import javax.mail.MessagingException;
+import java.util.HashMap;
+import java.util.Map;
 
-    @RestController
-    @RequestMapping("/api/auth")
-    public class AuthController {
+@RestController
+@RequestMapping("/api/auth")
+public class AuthController {
 
-        private static final Logger log = LoggerFactory.getLogger(AuthController.class);
+    private static final Logger log = LoggerFactory.getLogger(AuthController.class);
 
-        private final UserService userService;
-        private final BlacklistService blacklistService;
-        private final JwtTokenProvider jwtTokenProvider;
-        private final RestTemplate restTemplate;
+    private final UserService userService;
+    private final BlacklistService blacklistService;
+    private final JwtTokenProvider jwtTokenProvider;
+    private final RestTemplate restTemplate;
 
-        @Value("${kyc.service.url:http://localhost:8081/api/kyc}")
-        private String kycServiceUrl;
+    @Value("${kyc.service.url:http://localhost:8081/api/kyc}")
+    private String kycServiceUrl;
 
-        @Autowired
-        public AuthController(UserService userService, BlacklistService blacklistService,
-                              JwtTokenProvider jwtTokenProvider, RestTemplate restTemplate) {
-            this.userService = userService;
-            this.blacklistService = blacklistService;
-            this.jwtTokenProvider = jwtTokenProvider;
-            this.restTemplate = restTemplate;
+    @Autowired
+    public AuthController(UserService userService, BlacklistService blacklistService,
+                          JwtTokenProvider jwtTokenProvider, RestTemplate restTemplate) {
+        this.userService = userService;
+        this.blacklistService = blacklistService;
+        this.jwtTokenProvider = jwtTokenProvider;
+        this.restTemplate = restTemplate;
+    }
+
+    @PostMapping("/register")
+    public ResponseEntity<ApiResponse<String>> register(@RequestBody UserRequest userRequest) {
+        try {
+            log.info("Registering new user with username: {}", userRequest.getUsername());
+            userService.preRegisterUser(userRequest);
+            return ResponseEntity.ok(new ApiResponse<>("Registration initiated. OTP sent to email.",
+                    "Registration initiated", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Registration failed for username: {}. Error: {}", userRequest.getUsername(), e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
+        } catch (Exception e) {
+            log.error("Unexpected error during registration for username: {}", userRequest.getUsername(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ApiResponse<>("Registration failed: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()));
         }
+    }
 
-        @PostMapping("/register")
-        public ResponseEntity<String> register(@RequestBody UserRequest userRequest) {
-            try {
-                log.info("Registering new user with username: {}", userRequest.getUsername());
-                userService.preRegisterUser(userRequest);
-                return ResponseEntity.ok("Registration initiated. OTP sent to email.");
-            } catch (CustomException e) {
-                log.error("Registration failed for username: {}. Error: {}", userRequest.getUsername(), e.getMessage());
-                return ResponseEntity.status(e.getStatus()).body(e.getMessage());
-            } catch (Exception e) {
-                log.error("Unexpected error during registration: {}", e.getMessage());
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body("Registration failed: " + e.getMessage());
-            }
+    @PostMapping("/disable-2fa/{username}")
+    public ResponseEntity<ApiResponse<String>> disableTwoFactorAuth(@PathVariable String username) {
+        try {
+            log.info("Disabling 2FA for username: {}", username);
+            userService.disable2FA(username);
+            return ResponseEntity.ok(new ApiResponse<>("2FA disabled successfully for " + username,
+                    "2FA disabled", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Failed to disable 2FA for username: {}. Error: {}", username, e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
+        } catch (Exception e) {
+            log.error("Unexpected error while disabling 2FA for username: {}", username, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ApiResponse<>("An error occurred while disabling 2FA", HttpStatus.INTERNAL_SERVER_ERROR.value()));
         }
+    }
 
-        @PostMapping("/change-password")
-        public ResponseEntity<String> changePassword(@RequestBody ChangePasswordRequest changePasswordRequest,
-                                                     @RequestHeader("Authorization") String token) {
-            try {
-                String username = jwtTokenProvider.getUsernameFromToken(token.substring(7));
-                log.info("Changing password for username: {}", username);
-                userService.changeUserPassword(username, changePasswordRequest.getCurrentPassword(),
-                        changePasswordRequest.getNewPassword(),
-                        changePasswordRequest.getConfirmPassword());
-                return ResponseEntity.ok("Password changed successfully.");
-            } catch (CustomException e) {
-                log.error("Password change failed: {}", e.getMessage());
-                return ResponseEntity.status(e.getStatus()).body(e.getMessage());
-            } catch (Exception e) {
-                log.error("Unexpected error during password change: {}", e.getMessage());
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body("Password change failed: " + e.getMessage());
-            }
+    @PostMapping("/change-password")
+    public ResponseEntity<ApiResponse<String>> changePassword(@RequestBody ChangePasswordRequest changePasswordRequest,
+                                                              @RequestHeader("Authorization") String token) {
+        try {
+            String username = jwtTokenProvider.getUsernameFromToken(token.substring(7));
+            log.info("Changing password for username: {}", username);
+            userService.changeUserPassword(username, changePasswordRequest.getCurrentPassword(),
+                    changePasswordRequest.getNewPassword(), changePasswordRequest.getConfirmPassword());
+            return ResponseEntity.ok(new ApiResponse<>("Password changed successfully.",
+                    "Password changed", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Password change failed for token: {}. Error: {}", token, e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
+        } catch (Exception e) {
+            log.error("Unexpected error during password change: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ApiResponse<>("Password change failed: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()));
         }
+    }
 
-        @PostMapping("/resend-otp")
-        public ResponseEntity<String> resendOtp(@RequestParam String email) {
-            try {
-                log.info("Resending OTP to email: {}", email);
-                userService.resendOtp(email);
-                return ResponseEntity.ok("OTP resent to email.");
-            } catch (CustomException e) {
-                log.error("Failed to resend OTP to email: {}. Error: {}", email, e.getMessage());
-                return ResponseEntity.status(e.getStatus()).body(e.getMessage());
-            } catch (MessagingException e) {
-                log.error("Messaging error during OTP resend: {}", e.getMessage());
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body("Failed to resend OTP: " + e.getMessage());
-            }
+    @PostMapping("/resend-otp")
+    public ResponseEntity<ApiResponse<String>> resendOtp(@RequestParam String email) {
+        try {
+            log.info("Resending OTP to email: {}", email);
+            userService.resendOtp(email);
+            return ResponseEntity.ok(new ApiResponse<>("OTP resent to email.",
+                    "OTP resent", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Failed to resend OTP to email: {}. Error: {}", email, e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
+        } catch (MessagingException e) {
+            log.error("Messaging error during OTP resend to email: {}", email, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ApiResponse<>("Failed to resend OTP: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()));
         }
+    }
 
-        @PostMapping("/verify-otp")
-        public ResponseEntity<String> verifyOtp(@RequestParam String email, @RequestParam String otp) {
-            try {
-                log.info("Verifying OTP for email: {}", email);
-                String message = userService.completeRegistration(email, otp);
-                return ResponseEntity.ok(message);
-            } catch (CustomException e) {
-                log.error("OTP verification failed for email: {}. Error: {}", email, e.getMessage());
-                return ResponseEntity.status(e.getStatus()).body(e.getMessage());
-            }
+    @PostMapping("/verify-otp")
+    public ResponseEntity<ApiResponse<String>> verifyOtp(@RequestParam String email, @RequestParam String otp) {
+        try {
+            log.info("Verifying OTP for email: {}", email);
+            String message = userService.completeRegistration(email, otp);
+            return ResponseEntity.ok(new ApiResponse<>(message, "OTP verified", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("OTP verification failed for email: {}. Error: {}", email, e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
         }
+    }
 
-        @PostMapping("/login")
-        public ResponseEntity<LoginResponse> login(@RequestBody LoginRequest loginRequest) {
-            try {
-                log.info("Login attempt for username: {}", loginRequest.getUsername());
-                String token = userService.authenticateUser(loginRequest);
-                return ResponseEntity.ok(new LoginResponse(token));
-            } catch (CustomException e) {
-                log.error("Login failed for username: {}. Error: {}", loginRequest.getUsername(), e.getMessage());
-                return ResponseEntity.status(e.getStatus()).body(null);
-            }
+    @PostMapping("/login")
+    public ResponseEntity<ApiResponse<LoginResponse>> login(@RequestBody LoginRequest loginRequest) {
+        try {
+            log.info("Login attempt for username: {}", loginRequest.getUsername());
+            String token = userService.authenticateUser(loginRequest);
+            Users user = userService.findByUsername(loginRequest.getUsername());
+            LoginResponse loginResponse = new LoginResponse(token, user.isTwoFactorEnabled());
+            return ResponseEntity.ok(new ApiResponse<>(loginResponse, "Login successful", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Login failed for username: {}. Error: {}", loginRequest.getUsername(), e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
         }
+    }
 
-        @GetMapping("/dashboard")
-        public ResponseEntity<String> dashboard(Authentication authentication) {
-            log.info("Dashboard access for user: {}", authentication.getName());
-            return ResponseEntity.ok("Welcome " + authentication.getName() + ", you have access to the dashboard.");
+    @PostMapping("/verify-2fa")
+    public ResponseEntity<ApiResponse<LoginResponse>> verify2FA(@RequestParam String username, @RequestParam String totpCode) {
+        try {
+            log.info("Verifying 2FA for username: {}", username);
+            String token = userService.verify2FA(username, totpCode);
+            LoginResponse loginResponse = new LoginResponse(token, false);
+            return ResponseEntity.ok(new ApiResponse<>(loginResponse, "2FA verified", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("2FA verification failed for username: {}. Error: {}", username, e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
         }
+    }
 
-        @PostMapping("/logout")
-        public ResponseEntity<String> logout(@RequestHeader("Authorization") String tokenHeader) {
-            if (tokenHeader == null || !tokenHeader.startsWith("Bearer ")) {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                        .body("Invalid token format. Please provide a valid Bearer token.");
-            }
-
-            try {
-                String token = tokenHeader.substring(7); // Remove "Bearer " prefix
-                userService.logoutUser(token);  // Use UserService to blacklist or invalidate the token
-
-                return ResponseEntity.ok("Logged out successfully.");
-            } catch (CustomException e) {
-                // CustomException is likely for known errors related to your business logic
-                return ResponseEntity.status(e.getStatus())
-                        .body("Logout failed: " + e.getMessage());
-            } catch (Exception e) {
-                // Catch any other unexpected errors
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body("Logout failed due to server error: " + e.getMessage());
-            }
+    @PostMapping("/enable-2fa")
+    public ResponseEntity<ApiResponse<Map<String, String>>> enable2FA(@RequestHeader("Authorization") String token) {
+        try {
+            String username = jwtTokenProvider.getUsernameFromToken(token.substring(7));
+            log.info("Enabling 2FA for username: {}", username);
+            String secret = userService.enable2FA(username);
+            Map<String, String> response = new HashMap<>();
+            response.put("secret", secret);
+            response.put("qrCodeUrl", generateQrCodeUrl(username, secret));
+            return ResponseEntity.ok(new ApiResponse<>(response, "2FA enabled", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Failed to enable 2FA for token: {}. Error: {}", token, e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
         }
+    }
 
-        @PostMapping("/forgot-password")
-        public ResponseEntity<String> forgotPassword(@RequestParam String email) {
-            try {
-                log.info("Password reset request for email: {}", email);
-                userService.requestPasswordReset(email);
-                return ResponseEntity.ok("Password reset OTP sent to your email.");
-            } catch (CustomException e) {
-                log.error("Password reset request failed for email: {}. Error: {}", email, e.getMessage());
-                return ResponseEntity.status(e.getStatus()).body(e.getMessage());
-            } catch (Exception e) {
-                log.error("Unexpected error during password reset request: {}", e.getMessage());
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body("Failed to send OTP: " + e.getMessage());
-            }
-        }
+    private String generateQrCodeUrl(String username, String secret) {
+        return String.format("otpauth://totp/%s:%s?secret=%s&issuer=MyApp", "MyApp", username, secret);
+    }
 
-        @PostMapping(value = "/verify-reset-otp", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
-        public ResponseEntity<String> verifyResetOtp(@RequestParam String email, @RequestParam String otp) {
-            log.info("Verifying reset OTP for email: {}", email);
-            if (userService.verifyResetOtp(email, otp)) {
-                return ResponseEntity.ok("OTP verified.");
-            } else {
-                log.warn("Invalid OTP for email: {}", email);
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Invalid OTP.");
-            }
-        }
+    @GetMapping("/dashboard")
+    public ResponseEntity<ApiResponse<String>> dashboard(Authentication authentication) {
+        log.info("Dashboard access for user: {}", authentication.getName());
+        String message = "Welcome " + authentication.getName() + ", you have access to the dashboard.";
+        return ResponseEntity.ok(new ApiResponse<>(message, "Dashboard accessed", HttpStatus.OK.value()));
+    }
 
-        @PostMapping(value = "/reset-forgotten-password", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
-        public ResponseEntity<String> resetForgottenPassword(@RequestParam String email, @RequestParam String newPassword) {
-            try {
-                log.info("Resetting password for email: {}", email);
-                userService.resetPassword(email, newPassword);
-                return ResponseEntity.ok("Password reset successfully.");
-            } catch (CustomException e) {
-                log.error("Password reset failed for email: {}. Error: {}", email, e.getMessage());
-                return ResponseEntity.status(e.getStatus()).body(e.getMessage());
-            }
+    @PostMapping("/logout")
+    public ResponseEntity<ApiResponse<String>> logout(@RequestHeader("Authorization") String tokenHeader) {
+        if (tokenHeader == null || !tokenHeader.startsWith("Bearer ")) {
+            log.warn("Invalid token format: {}", tokenHeader);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(new ApiResponse<>("Invalid token format. Please provide a valid Bearer token.", HttpStatus.BAD_REQUEST.value()));
         }
+        try {
+            String token = tokenHeader.substring(7);
+            log.info("Logging out user with token: {}", token);
+            userService.logoutUser(token);
+            return ResponseEntity.ok(new ApiResponse<>("Logged out successfully.", "Logout successful", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Logout failed for token: {}. Error: {}", tokenHeader, e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>("Logout failed: " + e.getMessage(), e.getStatus().value()));
+        } catch (Exception e) {
+            log.error("Unexpected error during logout: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ApiResponse<>("Logout failed due to server error: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()));
+        }
+    }
+
+    @PostMapping("/forgot-password")
+    public ResponseEntity<ApiResponse<String>> forgotPassword(@RequestParam String email) {
+        try {
+            log.info("Password reset request for email: {}", email);
+            userService.requestPasswordReset(email);
+            return ResponseEntity.ok(new ApiResponse<>("Password reset OTP sent to your email.",
+                    "Reset OTP sent", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Password reset request failed for email: {}. Error: {}", email, e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
+        } catch (Exception e) {
+            log.error("Unexpected error during password reset request: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(new ApiResponse<>("Failed to send OTP: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()));
+        }
+    }
+
+    @PostMapping(value = "/verify-reset-otp", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public ResponseEntity<ApiResponse<String>> verifyResetOtp(@RequestParam String email, @RequestParam String otp) {
+        log.info("Verifying reset OTP for email: {}", email);
+        if (userService.verifyResetOtp(email, otp)) {
+            return ResponseEntity.ok(new ApiResponse<>("OTP verified.", "Reset OTP verified", HttpStatus.OK.value()));
+        } else {
+            log.warn("Invalid reset OTP for email: {}", email);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(new ApiResponse<>("Invalid OTP.", HttpStatus.BAD_REQUEST.value()));
+        }
+    }
+
+    @PostMapping(value = "/reset-forgotten-password", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public ResponseEntity<ApiResponse<String>> resetForgottenPassword(@RequestParam String email, @RequestParam String newPassword) {
+        try {
+            log.info("Resetting password for email: {}", email);
+            userService.resetPassword(email, newPassword);
+            return ResponseEntity.ok(new ApiResponse<>("Password reset successfully.",
+                    "Password reset", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Password reset failed for email: {}. Error: {}", email, e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
+        }
+    }
 
     @PostMapping("/kyc/initiate")
-    public ResponseEntity<String> initiateKyc(@RequestHeader("Authorization") String token) {
+    public ResponseEntity<ApiResponse<String>> initiateKyc(@RequestHeader("Authorization") String token) {
         String username = jwtTokenProvider.getUsernameFromToken(token.substring(7));
         log.info("Initiating KYC for username: {}", username);
-
         Map<String, String> kycRequest = new HashMap<>();
         kycRequest.put("username", username);
-
         try {
             ResponseEntity<String> response = restTemplate.postForEntity(
                     kycServiceUrl + "/initiate",
                     new org.springframework.http.HttpEntity<>(kycRequest, createHeaders(token)),
                     String.class
             );
-            return ResponseEntity.status(response.getStatusCode()).body(response.getBody());
+            return ResponseEntity.status(response.getStatusCode())
+                    .body(new ApiResponse<>(response.getBody(), "KYC initiated", response.getStatusCode().value()));
         } catch (Exception e) {
-            log.error("KYC initiation failed: {}", e.getMessage());
+            log.error("KYC initiation failed for username: {}. Error: {}", username, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("KYC initiation failed: " + e.getMessage());
+                    .body(new ApiResponse<>("KYC initiation failed: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()));
         }
     }
 
     @GetMapping("/kyc/status")
-    public ResponseEntity<String> getKycStatus(@RequestHeader("Authorization") String token) {
+    public ResponseEntity<ApiResponse<String>> getKycStatus(@RequestHeader("Authorization") String token) {
         String username = jwtTokenProvider.getUsernameFromToken(token.substring(7));
-        log.info("Fetching KYC status for externalUserId: {}", username);
-
+        log.info("Fetching KYC status for username: {}", username);
         try {
             ResponseEntity<String> response = restTemplate.getForEntity(
                     kycServiceUrl + "/status?externalUserId=" + username,
-                    String.class,
-                    createHeaders(token)
+                    String.class
             );
-            return ResponseEntity.status(response.getStatusCode()).body(response.getBody());
+            return ResponseEntity.status(response.getStatusCode())
+                    .body(new ApiResponse<>(response.getBody(), "KYC status retrieved", response.getStatusCode().value()));
         } catch (Exception e) {
-            log.error("Failed to retrieve KYC status: {}", e.getMessage());
+            log.error("Failed to retrieve KYC status for username: {}. Error: {}", username, e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Failed to retrieve KYC status: " + e.getMessage());
+                    .body(new ApiResponse<>("Failed to retrieve KYC status: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()));
         }
     }
 
     @GetMapping("/user/{username}")
-    public ResponseEntity<Map<String, Object>> getUser(@PathVariable String username) {
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getUser(@PathVariable String username) {
         log.info("Fetching user data for username: {}", username);
         Users user = userService.findByUsername(username);
         if (user == null) {
             log.warn("User not found: {}", username);
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new ApiResponse<>("User not found.", HttpStatus.NOT_FOUND.value()));
         }
         Map<String, Object> userData = new HashMap<>();
         userData.put("username", user.getUsername());
         userData.put("email", user.getEmail());
-        return ResponseEntity.ok(userData);
+        return ResponseEntity.ok(new ApiResponse<>(userData, "User data retrieved", HttpStatus.OK.value()));
     }
 
     private org.springframework.http.HttpHeaders createHeaders(String token) {

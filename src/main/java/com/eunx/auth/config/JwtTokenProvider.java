@@ -7,7 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.servlet.http.HttpServletRequest;
-import java.nio.charset.StandardCharsets; // Added import
+import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.List;
 
@@ -20,6 +20,7 @@ public class JwtTokenProvider {
     @Value("${jwt.expiration}")
     private long expirationTime;
 
+    // Original method for standard token generation
     public String generateToken(String username, List<String> roles) {
         Date now = new Date();
         Date expiryDate = new Date(now.getTime() + expirationTime);
@@ -28,7 +29,20 @@ public class JwtTokenProvider {
                 .claim("roles", roles)
                 .setIssuedAt(now)
                 .setExpiration(expiryDate)
-                .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8)) // Updated
+                .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8))
+                .compact();
+    }
+
+    // New method for generating tokens with custom expiration (e.g., for 2FA temporary tokens)
+    public String generateToken(String username, List<String> roles, int expirationInSeconds) {
+        Date now = new Date();
+        Date expiryDate = new Date(now.getTime() + expirationInSeconds * 1000L); // Convert seconds to milliseconds
+        return Jwts.builder()
+                .setSubject(username)
+                .claim("roles", roles)
+                .setIssuedAt(now)
+                .setExpiration(expiryDate)
+                .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8))
                 .compact();
     }
 
@@ -37,8 +51,8 @@ public class JwtTokenProvider {
     }
 
     public Claims getClaimsFromToken(String token) {
-        return Jwts.parserBuilder() // Updated to parserBuilder
-                .setSigningKey(secretKey.getBytes(StandardCharsets.UTF_8)) // Updated
+        return Jwts.parserBuilder()
+                .setSigningKey(secretKey.getBytes(StandardCharsets.UTF_8))
                 .build()
                 .parseClaimsJws(token)
                 .getBody();
