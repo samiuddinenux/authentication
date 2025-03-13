@@ -121,14 +121,14 @@ public class UserService {
             log.warn("Invalid credentials for username: {}", loginRequest.getUsername());
             throw new CustomException("Invalid credentials.", HttpStatus.UNAUTHORIZED);
         }
-        if (!user.isEmailVerified()) {
+        if (Boolean.FALSE.equals(user.isEmailVerified())) { // Handle null safely
             log.warn("Email not verified for username: {}", loginRequest.getUsername());
             throw new CustomException("Email not verified.", HttpStatus.FORBIDDEN);
         }
 
         String username = user.getUsername();
         String accessToken;
-        String refreshToken = generateRefreshToken(username); // Direct call to instance method
+        String refreshToken = generateRefreshToken(username);
 
         DeviceSession existingSession = refreshTokenStore.get(username);
         if (existingSession != null && !existingSession.getDeviceInfo().equals(deviceInfo)) {
@@ -146,7 +146,8 @@ public class UserService {
 
         refreshTokenStore.put(username, new DeviceSession(refreshToken, deviceInfo));
 
-        if (user.isTwoFactorEnabled()) {
+        boolean isTwoFactorEnabled = Boolean.TRUE.equals(user.isTwoFactorEnabled()); // Handle null safely
+        if (isTwoFactorEnabled) {
             accessToken = jwtTokenProvider.generateToken(username, Collections.singletonList("TEMP_ROLE"), 600);
             pending2FALogins.put(username, accessToken);
             log.info("2FA required, temp token generated for {}: {}", username, accessToken);
@@ -154,7 +155,7 @@ public class UserService {
             accessToken = jwtTokenProvider.generateToken(username, user.getRoles());
             log.info("User authenticated successfully: {}", username);
         }
-        return new LoginResponse(accessToken, refreshToken, user.isTwoFactorEnabled());
+        return new LoginResponse(accessToken, refreshToken, isTwoFactorEnabled);
     }
 
     private String generateRefreshToken(String username) {

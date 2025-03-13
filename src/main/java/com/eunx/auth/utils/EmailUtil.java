@@ -16,11 +16,11 @@ public class EmailUtil {
     @Autowired
     private JavaMailSender mailSender;
 
-    // Basic email format validation
     public static boolean isValidEmail(String email) {
         String emailRegex = "^[A-Za-z0-9+_.-]+@(.+)$";
         return email.matches(emailRegex);
     }
+
     public void sendLoginAttemptNotification(String toEmail, String deviceInfo) throws MessagingException {
         MimeMessage message = mailSender.createMimeMessage();
         MimeMessageHelper helper = new MimeMessageHelper(message, true);
@@ -38,11 +38,11 @@ public class EmailUtil {
         );
         mailSender.send(message);
     }
-    // Actual OTP email sending
+
     public boolean sendOtpEmail(String email, String otp) {
         try {
             SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom("samiuddinbirgoshi@gmail.com"); // Set the valid "from" email address
+            message.setFrom("samiuddinbirgoshi@gmail.com");
             message.setTo(email);
             message.setSubject("Your OTP for Registration");
             message.setText("Your OTP is: " + otp);
