@@ -1,18 +1,28 @@
 package com.eunx.auth.dto;
 
 public class LoginResponse {
-    private String token;
-    private boolean requires2FA; // New field to indicate if 2FA is required
+    private String token;         // Access token
+    private String refreshToken;  // New field for refresh token
+    private boolean requires2FA;  // Existing field to indicate if 2FA is required
 
-    // Original constructor
+    // Constructor for basic token response (no 2FA, no refresh token explicitly set)
     public LoginResponse(String token) {
         this.token = token;
+        this.refreshToken = null; // Default to null if not provided
         this.requires2FA = false; // Default to false
     }
 
-    // New constructor for 2FA
+    // Constructor for token with 2FA (no refresh token yet)
     public LoginResponse(String token, boolean requires2FA) {
         this.token = token;
+        this.refreshToken = null; // Default to null if not provided
+        this.requires2FA = requires2FA;
+    }
+
+    // New constructor including refresh token and 2FA
+    public LoginResponse(String token, String refreshToken, boolean requires2FA) {
+        this.token = token;
+        this.refreshToken = refreshToken;
         this.requires2FA = requires2FA;
     }
 
@@ -23,6 +33,14 @@ public class LoginResponse {
 
     public void setToken(String token) {
         this.token = token;
+    }
+
+    public String getRefreshToken() {
+        return refreshToken;
+    }
+
+    public void setRefreshToken(String refreshToken) {
+        this.refreshToken = refreshToken;
     }
 
     public boolean isRequires2FA() {

@@ -136,12 +136,22 @@ public class AuthController {
     public ResponseEntity<ApiResponse<LoginResponse>> login(@RequestBody LoginRequest loginRequest) {
         try {
             log.info("Login attempt for username: {}", loginRequest.getUsername());
-            String token = userService.authenticateUser(loginRequest);
-            Users user = userService.findByUsername(loginRequest.getUsername());
-            LoginResponse loginResponse = new LoginResponse(token, user.isTwoFactorEnabled());
+            LoginResponse loginResponse = userService.authenticateUser(loginRequest);
             return ResponseEntity.ok(new ApiResponse<>(loginResponse, "Login successful", HttpStatus.OK.value()));
         } catch (CustomException e) {
             log.error("Login failed for username: {}. Error: {}", loginRequest.getUsername(), e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
+        }
+    }
+    @PostMapping("/refresh-token")
+    public ResponseEntity<ApiResponse<LoginResponse>> refreshToken(@RequestBody RefreshTokenRequest refreshTokenRequest) {
+        try {
+            log.info("Refreshing token for request");
+            LoginResponse loginResponse = userService.refreshAccessToken(refreshTokenRequest.getRefreshToken());
+            return ResponseEntity.ok(new ApiResponse<>(loginResponse, "Token refreshed", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Token refresh failed: {}", e.getMessage(), e);
             return ResponseEntity.status(e.getStatus())
                     .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
         }

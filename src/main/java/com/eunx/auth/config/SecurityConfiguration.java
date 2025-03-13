@@ -64,7 +64,10 @@ public class SecurityConfiguration {
                                 new AntPathRequestMatcher("/api/auth/reset-forgotten-password"),
                                 new AntPathRequestMatcher("/api/auth/verify-2fa"),
                                 new AntPathRequestMatcher("/api/auth/enable-2fa"),
-                                new AntPathRequestMatcher("/api/auth/disable-2fa")
+                                new AntPathRequestMatcher("/api/auth/disable-2fa"),
+                                new AntPathRequestMatcher("/api/auth/refresh-token")
+
+
                         ).permitAll()
 
                         // Logout endpoint requires authentication

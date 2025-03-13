@@ -42,7 +42,8 @@ public class JwtFilter extends OncePerRequestFilter {
             new AntPathRequestMatcher("/api/auth/verify-reset-otp"),
             new AntPathRequestMatcher("/api/auth/login-user-reset-password"),
             new AntPathRequestMatcher("/api/auth/reset-forgotten-password"),
-            new AntPathRequestMatcher("/api/auth/verify-2fa") // Added this line
+            new AntPathRequestMatcher("/api/auth/verify-2fa") ,
+            new AntPathRequestMatcher("/api/auth/refresh-token")// Added this line
     );
 
     @Override

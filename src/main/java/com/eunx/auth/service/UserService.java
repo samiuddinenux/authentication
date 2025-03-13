@@ -2,6 +2,7 @@ package com.eunx.auth.service;
 
 import com.eunx.auth.config.JwtTokenProvider;
 import com.eunx.auth.dto.LoginRequest;
+import com.eunx.auth.dto.LoginResponse;
 import com.eunx.auth.dto.UserRequest;
 import com.eunx.auth.entity.Users;
 import com.eunx.auth.exception.CustomException;
@@ -28,7 +29,7 @@ import java.util.Random;
 public class UserService {
 
     private static final Logger log = LoggerFactory.getLogger(UserService.class);
-
+    private final Map<String, String> refreshTokenStore = new HashMap<>();
     @Autowired private UserRepository userRepository;
     @Autowired private PasswordEncoder passwordEncoder;
     @Autowired private JwtTokenProvider jwtTokenProvider;
@@ -102,7 +103,7 @@ public class UserService {
         return String.valueOf(100000 + random.nextInt(900000));
     }
 
-    public String authenticateUser(LoginRequest loginRequest) {
+    public LoginResponse authenticateUser(LoginRequest loginRequest) {
         log.debug("Authenticating user: {}", loginRequest.getUsername());
         Users user = userRepository.findByUsername(loginRequest.getUsername());
         if (user == null || !passwordEncoder.matches(loginRequest.getPassword(), user.getPassword())) {
@@ -113,17 +114,49 @@ public class UserService {
             log.warn("Email not verified for username: {}", loginRequest.getUsername());
             throw new CustomException("Email not verified.", HttpStatus.FORBIDDEN);
         }
+
+        String accessToken;
+        String refreshToken = generateRefreshToken(user.getUsername());
+        refreshTokenStore.put(user.getUsername(), refreshToken);
+
         if (user.isTwoFactorEnabled()) {
-            String tempToken = jwtTokenProvider.generateToken(user.getUsername(), Collections.singletonList("TEMP_ROLE"), 600);
-            pending2FALogins.put(user.getUsername(), tempToken);
-            log.info("2FA required, temp token generated for {}: {}", user.getUsername(), tempToken);
-            return tempToken;
+            accessToken = jwtTokenProvider.generateToken(user.getUsername(), Collections.singletonList("TEMP_ROLE"), 600);
+            pending2FALogins.put(user.getUsername(), accessToken);
+            log.info("2FA required, temp token generated for {}: {}", user.getUsername(), accessToken);
+        } else {
+            accessToken = jwtTokenProvider.generateToken(user.getUsername(), user.getRoles());
+            log.info("User authenticated successfully: {}", user.getUsername());
         }
-        String token = jwtTokenProvider.generateToken(user.getUsername(), user.getRoles());
-        log.info("User authenticated successfully: {}", user.getUsername());
-        return token;
+        return new LoginResponse(accessToken, refreshToken, user.isTwoFactorEnabled());
+    }
+    private String generateRefreshToken(String username) {
+        return jwtTokenProvider.generateRefreshToken(username); // New method in JwtTokenProvider
     }
 
+    // Refresh access token using refresh token
+    public LoginResponse refreshAccessToken(String refreshToken) {
+        if (!jwtTokenProvider.validateToken(refreshToken)) {
+            log.warn("Invalid or expired refresh token");
+            throw new CustomException("Invalid or expired refresh token.", HttpStatus.UNAUTHORIZED);
+        }
+
+        String username = jwtTokenProvider.getUsernameFromToken(refreshToken);
+        String storedRefreshToken = refreshTokenStore.get(username);
+        if (storedRefreshToken == null || !storedRefreshToken.equals(refreshToken)) {
+            log.warn("Refresh token not found or mismatched for username: {}", username);
+            throw new CustomException("Invalid refresh token.", HttpStatus.UNAUTHORIZED);
+        }
+
+        Users user = userRepository.findByUsername(username);
+        if (user == null) {
+            log.warn("User not found for refresh token: {}", username);
+            throw new CustomException("User not found.", HttpStatus.NOT_FOUND);
+        }
+
+        String newAccessToken = jwtTokenProvider.generateToken(user.getUsername(), user.getRoles());
+        log.info("Access token refreshed successfully for username: {}", username);
+        return new LoginResponse(newAccessToken, refreshToken, false);
+    }
     public String verify2FA(String username, String totpCode) {
         log.debug("Verifying 2FA for username: {} with code: {}", username, totpCode);
         totpCode = totpCode.trim().replaceAll("\\s+", "");

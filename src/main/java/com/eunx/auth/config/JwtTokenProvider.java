@@ -18,15 +18,17 @@ public class JwtTokenProvider {
     private String secretKey;
 
     @Value("${jwt.expiration}")
-    private long expirationTime;
+    private long accessTokenExpirationTime;
+    @Value("${jwt.refresh.expiration:604800000}") // Default to 7 days in milliseconds
+    private long refreshTokenExpirationTime;
 
     // Original method for standard token generation
-    public String generateToken(String username, List<String> roles) {
+    public String generateRefreshToken(String username) {
         Date now = new Date();
-        Date expiryDate = new Date(now.getTime() + expirationTime);
+        Date expiryDate = new Date(now.getTime() + refreshTokenExpirationTime);
         return Jwts.builder()
                 .setSubject(username)
-                .claim("roles", roles)
+                .claim("type", "refresh") // Differentiate from access token
                 .setIssuedAt(now)
                 .setExpiration(expiryDate)
                 .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8))
@@ -34,18 +36,30 @@ public class JwtTokenProvider {
     }
 
     // New method for generating tokens with custom expiration (e.g., for 2FA temporary tokens)
-    public String generateToken(String username, List<String> roles, int expirationInSeconds) {
+    public String generateToken(String username, List<String> roles) {
         Date now = new Date();
-        Date expiryDate = new Date(now.getTime() + expirationInSeconds * 1000L); // Convert seconds to milliseconds
+        Date expiryDate = new Date(now.getTime() + accessTokenExpirationTime);
         return Jwts.builder()
                 .setSubject(username)
                 .claim("roles", roles)
+                .claim("type", "access")
                 .setIssuedAt(now)
                 .setExpiration(expiryDate)
                 .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8))
                 .compact();
     }
-
+    public String generateToken(String username, List<String> roles, int expirationInSeconds) {
+        Date now = new Date();
+        Date expiryDate = new Date(now.getTime() + expirationInSeconds * 1000L);
+        return Jwts.builder()
+                .setSubject(username)
+                .claim("roles", roles)
+                .claim("type", "access")
+                .setIssuedAt(now)
+                .setExpiration(expiryDate)
+                .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8))
+                .compact();
+    }
     public String getUsernameFromToken(String token) {
         return getClaimsFromToken(token).getSubject();
     }
