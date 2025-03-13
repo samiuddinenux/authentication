@@ -138,7 +138,9 @@ public class AuthController {
             String deviceInfo = getDeviceInfo(request);
             log.info("Login attempt for username: {} from device: {}", loginRequest.getUsername(), deviceInfo);
             LoginResponse loginResponse = userService.authenticateUser(loginRequest, deviceInfo);
-            return ResponseEntity.ok(new ApiResponse<>(loginResponse, "Login successful", HttpStatus.OK.value()));
+            String message = loginResponse.isRequires2FA() ?
+                    "Login successful, 2FA required" : "Login successful";
+            return ResponseEntity.ok(new ApiResponse<>(loginResponse, message, HttpStatus.OK.value()));
         } catch (CustomException e) {
             log.error("Login failed for username: {}. Error: {}", loginRequest.getUsername(), e.getMessage(), e);
             return ResponseEntity.status(e.getStatus())
@@ -168,12 +170,13 @@ public class AuthController {
     }
 
     @PostMapping("/verify-2fa")
-    public ResponseEntity<ApiResponse<LoginResponse>> verify2FA(@RequestParam String username, @RequestParam String totpCode) {
+    public ResponseEntity<ApiResponse<LoginResponse>> verify2FA(@RequestParam String username,
+                                                                @RequestParam String totpCode,
+                                                                @RequestHeader("Authorization") String preAuthToken) {
         try {
             log.info("Verifying 2FA for username: {}", username);
-            String token = userService.verify2FA(username, totpCode);
-            LoginResponse loginResponse = new LoginResponse(token, false);
-            return ResponseEntity.ok(new ApiResponse<>(loginResponse, "2FA verified", HttpStatus.OK.value()));
+            LoginResponse loginResponse = userService.verify2FA(username, totpCode, preAuthToken.substring(7));
+            return ResponseEntity.ok(new ApiResponse<>(loginResponse, "2FA verified, access granted", HttpStatus.OK.value()));
         } catch (CustomException e) {
             log.error("2FA verification failed for username: {}. Error: {}", username, e.getMessage(), e);
             return ResponseEntity.status(e.getStatus())
@@ -185,14 +188,28 @@ public class AuthController {
     public ResponseEntity<ApiResponse<Map<String, String>>> enable2FA(@RequestHeader("Authorization") String token) {
         try {
             String username = jwtTokenProvider.getUsernameFromToken(token.substring(7));
-            log.info("Enabling 2FA for username: {}", username);
+            log.info("Initiating 2FA setup for username: {}", username);
             String secret = userService.enable2FA(username);
             Map<String, String> response = new HashMap<>();
             response.put("secret", secret);
             response.put("qrCodeUrl", generateQrCodeUrl(username, secret));
-            return ResponseEntity.ok(new ApiResponse<>(response, "2FA enabled", HttpStatus.OK.value()));
+            return ResponseEntity.ok(new ApiResponse<>(response, "Scan the QR code and verify 2FA", HttpStatus.OK.value()));
         } catch (CustomException e) {
-            log.error("Failed to enable 2FA for token: {}. Error: {}", token, e.getMessage(), e);
+            log.error("Failed to initiate 2FA for token: {}. Error: {}", token, e.getMessage(), e);
+            return ResponseEntity.status(e.getStatus())
+                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
+        }
+    }
+    @PostMapping("/confirm-2fa")
+    public ResponseEntity<ApiResponse<String>> confirm2FA(@RequestHeader("Authorization") String token,
+                                                          @RequestParam String totpCode) {
+        try {
+            String username = jwtTokenProvider.getUsernameFromToken(token.substring(7));
+            log.info("Confirming 2FA setup for username: {}", username);
+            userService.confirm2FA(username, totpCode);
+            return ResponseEntity.ok(new ApiResponse<>("2FA enabled successfully", "2FA confirmed", HttpStatus.OK.value()));
+        } catch (CustomException e) {
+            log.error("Failed to confirm 2FA for token: {}. Error: {}", token, e.getMessage(), e);
             return ResponseEntity.status(e.getStatus())
                     .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
         }
@@ -316,18 +333,47 @@ public class AuthController {
     }
 
     @GetMapping("/user/{username}")
-    public ResponseEntity<ApiResponse<Map<String, Object>>> getUser(@PathVariable String username) {
-        log.info("Fetching user data for username: {}", username);
-        Users user = userService.findByUsername(username);
-        if (user == null) {
-            log.warn("User not found: {}", username);
-            return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(new ApiResponse<>("User not found.", HttpStatus.NOT_FOUND.value()));
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getUser(
+            @PathVariable String username,
+            @RequestHeader("Authorization") String tokenHeader) {
+        if (tokenHeader == null || !tokenHeader.startsWith("Bearer ")) {
+            log.warn("Invalid token format for getUser request: {}", tokenHeader);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(new ApiResponse<>("Invalid token format. Please provide a valid Bearer token.",
+                            HttpStatus.BAD_REQUEST.value()));
         }
-        Map<String, Object> userData = new HashMap<>();
-        userData.put("username", user.getUsername());
-        userData.put("email", user.getEmail());
-        return ResponseEntity.ok(new ApiResponse<>(userData, "User data retrieved", HttpStatus.OK.value()));
+
+        String token = tokenHeader.substring(7);
+        try {
+            String authenticatedUsername = jwtTokenProvider.getUsernameFromToken(token);
+            log.info("Fetching user data for username: {} by authenticated user: {}", username, authenticatedUsername);
+
+            // Optional: Restrict to self-access only (uncomment if needed)
+            /*
+            if (!authenticatedUsername.equals(username)) {
+                log.warn("User {} attempted to access data of user {}", authenticatedUsername, username);
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(new ApiResponse<>("You can only access your own user data.",
+                                HttpStatus.FORBIDDEN.value()));
+            }
+            */
+
+            Users user = userService.findByUsername(username);
+            if (user == null) {
+                log.warn("User not found: {}", username);
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(new ApiResponse<>("User not found.", HttpStatus.NOT_FOUND.value()));
+            }
+
+            Map<String, Object> userData = new HashMap<>();
+            userData.put("username", user.getUsername());
+            userData.put("email", user.getEmail());
+            return ResponseEntity.ok(new ApiResponse<>(userData, "User data retrieved", HttpStatus.OK.value()));
+        } catch (Exception e) {
+            log.error("Error fetching user data for username: {}. Error: {}", username, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new ApiResponse<>("Invalid or expired token", HttpStatus.UNAUTHORIZED.value()));
+        }
     }
 
     private org.springframework.http.HttpHeaders createHeaders(String token) {

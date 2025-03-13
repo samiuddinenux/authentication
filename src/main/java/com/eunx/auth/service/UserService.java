@@ -41,6 +41,7 @@ public class UserService {
     private final Map<String, String> resetOtpStore = new HashMap<>();
     private final Map<String, String> pending2FALogins = new HashMap<>();
     private final Map<String, DeviceSession> refreshTokenStore = new HashMap<>();
+    private final Map<String, String> pending2FASecrets = new HashMap<>();
     public void preRegisterUser(UserRequest userRequest) throws MessagingException {
         log.debug("Pre-registering user: {}", userRequest.getUsername());
         if (!EmailUtil.isValidEmail(userRequest.getEmail())) {
@@ -108,60 +109,6 @@ public class UserService {
         log.warn("Invalid OTP for email: {}", email);
         throw new CustomException("Invalid OTP.", HttpStatus.BAD_REQUEST);
     }
-
-    private String generateOtp() {
-        Random random = new Random();
-        return String.valueOf(100000 + random.nextInt(900000));
-    }
-
-    public LoginResponse authenticateUser(LoginRequest loginRequest, String deviceInfo) {
-        log.debug("Authenticating user: {} from device: {}", loginRequest.getUsername(), deviceInfo);
-        Users user = userRepository.findByUsername(loginRequest.getUsername());
-        if (user == null || !passwordEncoder.matches(loginRequest.getPassword(), user.getPassword())) {
-            log.warn("Invalid credentials for username: {}", loginRequest.getUsername());
-            throw new CustomException("Invalid credentials.", HttpStatus.UNAUTHORIZED);
-        }
-        if (Boolean.FALSE.equals(user.isEmailVerified())) { // Handle null safely
-            log.warn("Email not verified for username: {}", loginRequest.getUsername());
-            throw new CustomException("Email not verified.", HttpStatus.FORBIDDEN);
-        }
-
-        String username = user.getUsername();
-        String accessToken;
-        String refreshToken = generateRefreshToken(username);
-
-        DeviceSession existingSession = refreshTokenStore.get(username);
-        if (existingSession != null && !existingSession.getDeviceInfo().equals(deviceInfo)) {
-            blacklistService.blacklistToken(existingSession.getRefreshToken());
-            refreshTokenStore.remove(username);
-            try {
-                emailUtil.sendLoginAttemptNotification(user.getEmail(), deviceInfo);
-                log.info("Notified user {} of login attempt from new device: {}", username, deviceInfo);
-            } catch (MessagingException e) {
-                log.error("Failed to send notification to {}: {}", user.getEmail(), e.getMessage());
-            }
-            log.warn("Login attempt from new device rejected for user: {}", username);
-            throw new CustomException("Another device is already logged in. Previous session invalidated.", HttpStatus.CONFLICT);
-        }
-
-        refreshTokenStore.put(username, new DeviceSession(refreshToken, deviceInfo));
-
-        boolean isTwoFactorEnabled = Boolean.TRUE.equals(user.isTwoFactorEnabled()); // Handle null safely
-        if (isTwoFactorEnabled) {
-            accessToken = jwtTokenProvider.generateToken(username, Collections.singletonList("TEMP_ROLE"), 600);
-            pending2FALogins.put(username, accessToken);
-            log.info("2FA required, temp token generated for {}: {}", username, accessToken);
-        } else {
-            accessToken = jwtTokenProvider.generateToken(username, user.getRoles());
-            log.info("User authenticated successfully: {}", username);
-        }
-        return new LoginResponse(accessToken, refreshToken, isTwoFactorEnabled);
-    }
-
-    private String generateRefreshToken(String username) {
-        return jwtTokenProvider.generateRefreshToken(username);
-    }
-
     public LoginResponse refreshAccessToken(String refreshToken, String deviceInfo) {
         if (!jwtTokenProvider.validateToken(refreshToken)) {
             log.warn("Invalid or expired refresh token");
@@ -185,7 +132,55 @@ public class UserService {
         log.info("Access token refreshed successfully for username: {}", username);
         return new LoginResponse(newAccessToken, refreshToken, false);
     }
-    public String verify2FA(String username, String totpCode) {
+    private String generateOtp() {
+        Random random = new Random();
+        return String.valueOf(100000 + random.nextInt(900000));
+    }
+
+    public LoginResponse authenticateUser(LoginRequest loginRequest, String deviceInfo) {
+        log.debug("Authenticating user: {} from device: {}", loginRequest.getUsername(), deviceInfo);
+        Users user = userRepository.findByUsername(loginRequest.getUsername());
+        if (user == null || !passwordEncoder.matches(loginRequest.getPassword(), user.getPassword())) {
+            log.warn("Invalid credentials for username: {}", loginRequest.getUsername());
+            throw new CustomException("Invalid credentials.", HttpStatus.UNAUTHORIZED);
+        }
+        if (Boolean.FALSE.equals(user.isEmailVerified())) {
+            log.warn("Email not verified for username: {}", loginRequest.getUsername());
+            throw new CustomException("Email not verified.", HttpStatus.FORBIDDEN);
+        }
+
+        String username = user.getUsername();
+        String preAuthToken = jwtTokenProvider.generatePreAuthToken(username); // Use pre-auth token
+        String refreshToken = jwtTokenProvider.generateRefreshToken(username);
+
+        DeviceSession existingSession = refreshTokenStore.get(username);
+        if (existingSession != null && !existingSession.getDeviceInfo().equals(deviceInfo)) {
+            blacklistService.blacklistToken(existingSession.getRefreshToken());
+            refreshTokenStore.remove(username);
+            try {
+                emailUtil.sendLoginAttemptNotification(user.getEmail(), deviceInfo);
+                log.info("Notified user {} of login attempt from new device: {}", username, deviceInfo);
+            } catch (MessagingException e) {
+                log.error("Failed to send notification to {}: {}", user.getEmail(), e.getMessage());
+            }
+            log.warn("Login attempt from new device rejected for user: {}", username);
+            throw new CustomException("Another device is already logged in. Previous session invalidated.", HttpStatus.CONFLICT);
+        }
+
+        refreshTokenStore.put(username, new DeviceSession(refreshToken, deviceInfo));
+        boolean isTwoFactorEnabled = Boolean.TRUE.equals(user.isTwoFactorEnabled());
+
+        if (isTwoFactorEnabled) {
+            pending2FALogins.put(username, preAuthToken);
+            log.info("2FA required, pre-auth token generated for {}: {}", username, preAuthToken);
+            return new LoginResponse(preAuthToken, true); // Pre-auth token, 2FA required
+        } else {
+            String accessToken = jwtTokenProvider.generateToken(username, user.getRoles());
+            log.info("User authenticated successfully: {}", username);
+            return new LoginResponse(accessToken, refreshToken, false); // Full access
+        }
+    }
+    public LoginResponse verify2FA(String username, String totpCode, String preAuthToken) {
         log.debug("Verifying 2FA for username: {} with code: {}", username, totpCode);
         totpCode = totpCode.trim().replaceAll("\\s+", "");
         Users user = userRepository.findByUsername(username);
@@ -197,23 +192,36 @@ public class UserService {
             log.warn("2FA not enabled for username: {}", username);
             throw new CustomException("2FA not enabled.", HttpStatus.BAD_REQUEST);
         }
+
+        String storedPreAuthToken = pending2FALogins.get(username);
+        if (storedPreAuthToken == null || !storedPreAuthToken.equals(preAuthToken) || !jwtTokenProvider.validateToken(preAuthToken)) {
+            log.warn("Invalid or expired pre-auth token for username: {}", username);
+            throw new CustomException("2FA session expired or invalid.", HttpStatus.UNAUTHORIZED);
+        }
+
         boolean isValidCode = verifyTotpCode(user.getTwoFactorSecret(), totpCode);
         if (!isValidCode) {
             log.warn("Invalid 2FA code for username: {}", username);
             throw new CustomException("Invalid 2FA code.", HttpStatus.UNAUTHORIZED);
         }
-        String tempToken = pending2FALogins.remove(username);
-        if (tempToken == null || !jwtTokenProvider.validateToken(tempToken)) {
-            log.warn("2FA session expired or invalid for username: {}", username);
-            throw new CustomException("2FA session expired or invalid.", HttpStatus.UNAUTHORIZED);
+
+        String accessToken = jwtTokenProvider.generateToken(user.getUsername(), user.getRoles());
+        DeviceSession session = refreshTokenStore.get(username);
+        if (session == null) {
+            log.warn("No session found for username: {}", username);
+            throw new CustomException("Session not found.", HttpStatus.INTERNAL_SERVER_ERROR);
         }
-        String token = jwtTokenProvider.generateToken(user.getUsername(), user.getRoles());
+        String refreshToken = session.getRefreshToken();
+
+        pending2FALogins.remove(username);
+        blacklistService.blacklistToken(preAuthToken);
+
         log.info("2FA verified successfully for username: {}", username);
-        return token;
+        return new LoginResponse(accessToken, refreshToken, false); // Full access granted
     }
 
     public String enable2FA(String username) {
-        log.debug("Enabling 2FA for username: {}", username);
+        log.debug("Initiating 2FA setup for username: {}", username);
         Users user = userRepository.findByUsername(username);
         if (user == null) {
             log.warn("User not found: {}", username);
@@ -223,12 +231,45 @@ public class UserService {
             log.warn("2FA already enabled for username: {}", username);
             throw new CustomException("2FA is already enabled.", HttpStatus.BAD_REQUEST);
         }
+
+        // Generate a temporary 2FA secret and store it
         String secret = new DefaultSecretGenerator().generate();
+        pending2FASecrets.put(username, secret);
+        log.info("Temporary 2FA secret generated for username: {}", username);
+        return secret; // Return secret for QR code generation
+    }
+    public void confirm2FA(String username, String totpCode) {
+        log.debug("Confirming 2FA setup for username: {} with code: {}", username, totpCode);
+        Users user = userRepository.findByUsername(username);
+        if (user == null) {
+            log.warn("User not found: {}", username);
+            throw new CustomException("User not found.", HttpStatus.NOT_FOUND);
+        }
+        if (user.isTwoFactorEnabled()) {
+            log.warn("2FA already enabled for username: {}", username);
+            throw new CustomException("2FA is already enabled.", HttpStatus.BAD_REQUEST);
+        }
+
+        // Retrieve the pending secret
+        String secret = pending2FASecrets.get(username);
+        if (secret == null) {
+            log.warn("No pending 2FA setup found for username: {}", username);
+            throw new CustomException("No pending 2FA setup found.", HttpStatus.BAD_REQUEST);
+        }
+
+        // Verify the TOTP code
+        boolean isValidCode = verifyTotpCode(secret, totpCode);
+        if (!isValidCode) {
+            log.warn("Invalid 2FA code during setup for username: {}", username);
+            throw new CustomException("Invalid 2FA code.", HttpStatus.UNAUTHORIZED);
+        }
+
+        // If valid, save the secret and enable 2FA
         user.setTwoFactorSecret(secret);
         user.setTwoFactorEnabled(true);
         userRepository.save(user);
-        log.info("2FA enabled for username: {} with secret: {}", username, secret);
-        return secret;
+        pending2FASecrets.remove(username); // Clean up
+        log.info("2FA setup confirmed and enabled for username: {}", username);
     }
 
     public void disable2FA(String username) {

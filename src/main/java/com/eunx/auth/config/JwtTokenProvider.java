@@ -19,23 +19,13 @@ public class JwtTokenProvider {
 
     @Value("${jwt.expiration}")
     private long accessTokenExpirationTime;
+
     @Value("${jwt.refresh.expiration:604800000}") // Default to 7 days in milliseconds
     private long refreshTokenExpirationTime;
 
-    // Original method for standard token generation
-    public String generateRefreshToken(String username) {
-        Date now = new Date();
-        Date expiryDate = new Date(now.getTime() + refreshTokenExpirationTime);
-        return Jwts.builder()
-                .setSubject(username)
-                .claim("type", "refresh") // Differentiate from access token
-                .setIssuedAt(now)
-                .setExpiration(expiryDate)
-                .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8))
-                .compact();
-    }
+    private final long preAuthTokenExpirationTime = 600 * 1000; // 10 minutes for pre-auth tokens
 
-    // New method for generating tokens with custom expiration (e.g., for 2FA temporary tokens)
+    // Generate full-access token
     public String generateToken(String username, List<String> roles) {
         Date now = new Date();
         Date expiryDate = new Date(now.getTime() + accessTokenExpirationTime);
@@ -48,18 +38,34 @@ public class JwtTokenProvider {
                 .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8))
                 .compact();
     }
-    public String generateToken(String username, List<String> roles, int expirationInSeconds) {
+
+    // Generate pre-auth token for 2FA
+    public String generatePreAuthToken(String username) {
         Date now = new Date();
-        Date expiryDate = new Date(now.getTime() + expirationInSeconds * 1000L);
+        Date expiryDate = new Date(now.getTime() + preAuthTokenExpirationTime);
         return Jwts.builder()
                 .setSubject(username)
-                .claim("roles", roles)
+                .claim("preAuth", true) // Mark as pre-auth token
                 .claim("type", "access")
                 .setIssuedAt(now)
                 .setExpiration(expiryDate)
                 .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8))
                 .compact();
     }
+
+    // Generate refresh token
+    public String generateRefreshToken(String username) {
+        Date now = new Date();
+        Date expiryDate = new Date(now.getTime() + refreshTokenExpirationTime);
+        return Jwts.builder()
+                .setSubject(username)
+                .claim("type", "refresh")
+                .setIssuedAt(now)
+                .setExpiration(expiryDate)
+                .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8))
+                .compact();
+    }
+
     public String getUsernameFromToken(String token) {
         return getClaimsFromToken(token).getSubject();
     }
@@ -94,4 +100,27 @@ public class JwtTokenProvider {
         List<String> roles = claims.get("roles", List.class);
         return roles != null && roles.contains(role);
     }
+
+    // New method to check if token is a pre-auth token
+    public boolean isPreAuthToken(String token) {
+        Claims claims = getClaimsFromToken(token);
+        Boolean preAuth = claims.get("preAuth", Boolean.class);
+        return preAuth != null && preAuth;
+    }
+
+    // Remove this method since it’s redundant with generateToken
+    /*
+    public String generateToken(String username, List<String> roles, int expirationInSeconds) {
+        Date now = new Date();
+        Date expiryDate = new Date(now.getTime() + expirationInSeconds * 1000L);
+        return Jwts.builder()
+                .setSubject(username)
+                .claim("roles", roles)
+                .claim("type", "access")
+                .setIssuedAt(now)
+                .setExpiration(expiryDate)
+                .signWith(SignatureAlgorithm.HS512, secretKey.getBytes(StandardCharsets.UTF_8))
+                .compact();
+    }
+    */
 }

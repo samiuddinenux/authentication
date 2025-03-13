@@ -42,8 +42,8 @@ public class JwtFilter extends OncePerRequestFilter {
             new AntPathRequestMatcher("/api/auth/verify-reset-otp"),
             new AntPathRequestMatcher("/api/auth/login-user-reset-password"),
             new AntPathRequestMatcher("/api/auth/reset-forgotten-password"),
-            new AntPathRequestMatcher("/api/auth/verify-2fa") ,
-            new AntPathRequestMatcher("/api/auth/refresh-token")// Added this line
+            new AntPathRequestMatcher("/api/auth/verify-2fa"),
+            new AntPathRequestMatcher("/api/auth/refresh-token")
     );
 
     @Override
@@ -58,7 +58,6 @@ public class JwtFilter extends OncePerRequestFilter {
         logger.info("Request Method: {}, URI: {}, Origin: {}",
                 request.getMethod(), request.getRequestURI(), request.getHeader("Origin"));
 
-        // Skip filter for public endpoints and OPTIONS requests
         if (shouldNotFilter(request)) {
             filterChain.doFilter(request, response);
             return;
@@ -82,20 +81,31 @@ public class JwtFilter extends OncePerRequestFilter {
                     Claims claims = jwtTokenProvider.getClaimsFromToken(token);
                     logger.info("Claims: {}", claims);
 
+                    boolean isPreAuth = jwtTokenProvider.isPreAuthToken(token);
+                    String path = request.getRequestURI();
+                    if (isPreAuth && !path.equals("/api/auth/verify-2fa") &&
+                            !path.equals("/api/auth/enable-2fa") && !path.equals("/api/auth/confirm-2fa")) {
+                        logger.error("Pre-auth token not allowed for endpoint: {}", path);
+                        response.sendError(HttpServletResponse.SC_UNAUTHORIZED,
+                                "Pre-auth token not allowed for this endpoint");
+                        return;
+                    }
+
                     String username = jwtTokenProvider.getUsernameFromToken(token);
                     logger.info("Username from Token: {}", username);
 
-                    List<String> roles = (List<String>) claims.get("roles");
-                    logger.info("Roles: {}", roles);
-
-                    List<SimpleGrantedAuthority> authorities = roles.stream()
-                            .map(SimpleGrantedAuthority::new)
-                            .collect(Collectors.toList());
-                    UsernamePasswordAuthenticationToken authentication =
-                            new UsernamePasswordAuthenticationToken(username, null, authorities);
-                    SecurityContextHolder.getContext().setAuthentication(authentication);
-                    request.setAttribute("username", username);
-                    logger.info("Authentication set for username: {}", username);
+                    if (!isPreAuth) {
+                        List<String> roles = (List<String>) claims.get("roles");
+                        logger.info("Roles: {}", roles);
+                        List<SimpleGrantedAuthority> authorities = roles.stream()
+                                .map(SimpleGrantedAuthority::new)
+                                .collect(Collectors.toList());
+                        UsernamePasswordAuthenticationToken authentication =
+                                new UsernamePasswordAuthenticationToken(username, null, authorities);
+                        SecurityContextHolder.getContext().setAuthentication(authentication);
+                        request.setAttribute("username", username);
+                        logger.info("Authentication set for username: {}", username);
+                    }
                 } else {
                     logger.error("Invalid or expired token");
                     response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid or expired token");
