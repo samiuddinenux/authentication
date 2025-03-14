@@ -42,6 +42,7 @@ public class UserService {
     private final Map<String, String> pending2FALogins = new HashMap<>();
     private final Map<String, DeviceSession> refreshTokenStore = new HashMap<>();
     private final Map<String, String> pending2FASecrets = new HashMap<>();
+
     public void preRegisterUser(UserRequest userRequest) throws MessagingException {
         log.debug("Pre-registering user: {}", userRequest.getUsername());
         if (!EmailUtil.isValidEmail(userRequest.getEmail())) {
@@ -74,6 +75,7 @@ public class UserService {
         emailUtil.sendOtpEmail(email, otp);
         log.info("OTP resent to {}: {}", email, otp);
     }
+
     private static class DeviceSession {
         private String refreshToken;
         private String deviceInfo; // Could be IP, device ID, or user-agent
@@ -86,6 +88,7 @@ public class UserService {
         public String getRefreshToken() { return refreshToken; }
         public String getDeviceInfo() { return deviceInfo; }
     }
+
     public String completeRegistration(String email, String otp) {
         log.debug("Completing registration for email: {} with OTP: {}", email, otp);
         if (otpStore.containsKey(email) && otpStore.get(email).equals(otp)) {
@@ -104,11 +107,12 @@ public class UserService {
             pendingRegistrations.remove(email);
             otpStore.remove(email);
             log.info("User registered successfully: {}", pendingUser.getUsername());
-            return "User registered successfully!";
+            return "User registered successfully! Please set up 2FA during your first login.";
         }
         log.warn("Invalid OTP for email: {}", email);
         throw new CustomException("Invalid OTP.", HttpStatus.BAD_REQUEST);
     }
+
     public LoginResponse refreshAccessToken(String refreshToken, String deviceInfo) {
         if (!jwtTokenProvider.validateToken(refreshToken)) {
             log.warn("Invalid or expired refresh token");
@@ -132,6 +136,7 @@ public class UserService {
         log.info("Access token refreshed successfully for username: {}", username);
         return new LoginResponse(newAccessToken, refreshToken, false);
     }
+
     private String generateOtp() {
         Random random = new Random();
         return String.valueOf(100000 + random.nextInt(900000));
@@ -168,18 +173,27 @@ public class UserService {
         }
 
         refreshTokenStore.put(username, new DeviceSession(refreshToken, deviceInfo));
-        boolean isTwoFactorEnabled = Boolean.TRUE.equals(user.isTwoFactorEnabled());
 
-        if (isTwoFactorEnabled) {
-            pending2FALogins.put(username, preAuthToken);
-            log.info("2FA required, pre-auth token generated for {}: {}", username, preAuthToken);
-            return new LoginResponse(preAuthToken, true); // Pre-auth token, 2FA required
-        } else {
-            String accessToken = jwtTokenProvider.generateToken(username, user.getRoles());
-            log.info("User authenticated successfully: {}", username);
-            return new LoginResponse(accessToken, refreshToken, false); // Full access
+        // Force 2FA for all users, including newly registered ones
+        // Check if 2FA is enabled, if not, enable it automatically
+        if (!user.isTwoFactorEnabled()) {
+            String secret = new DefaultSecretGenerator().generate();
+            user.setTwoFactorSecret(secret);
+            user.setTwoFactorEnabled(true);
+            userRepository.save(user);
+            log.info("2FA automatically enabled for user: {}", username);
+            try {
+                emailUtil.send2FAEnabledNotification(user.getEmail(), username);
+            } catch (MessagingException e) {
+                log.error("Failed to send 2FA enabled notification to {}: {}", user.getEmail(), e.getMessage());
+            }
         }
+
+        pending2FALogins.put(username, preAuthToken);
+        log.info("2FA required, pre-auth token generated for {}: {}", username, preAuthToken);
+        return new LoginResponse(preAuthToken, true); // Always return pre-auth token, 2FA required
     }
+
     public LoginResponse verify2FA(String username, String totpCode, String preAuthToken) {
         log.debug("Verifying 2FA for username: {} with code: {}", username, totpCode);
         totpCode = totpCode.trim().replaceAll("\\s+", "");
@@ -238,6 +252,7 @@ public class UserService {
         log.info("Temporary 2FA secret generated for username: {}", username);
         return secret; // Return secret for QR code generation
     }
+
     public void confirm2FA(String username, String totpCode) {
         log.debug("Confirming 2FA setup for username: {} with code: {}", username, totpCode);
         Users user = userRepository.findByUsername(username);
