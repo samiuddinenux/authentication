@@ -20,6 +20,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import javax.mail.MessagingException;
+import javax.transaction.Transactional;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -103,6 +104,8 @@ public class UserService {
             user.setPassword(passwordEncoder.encode(pendingUser.getPassword()));
             user.setRoles(Collections.singletonList("ROLE_USER"));
             user.setEmailVerified(true);
+            user.setTwoFactorEnabled(false); // Explicitly set to false for new users
+            user.setTwoFactorSecret(null);   // Optional: set to null or generate if needed later
             userRepository.save(user);
             pendingRegistrations.remove(email);
             otpStore.remove(email);
@@ -142,56 +145,67 @@ public class UserService {
         return String.valueOf(100000 + random.nextInt(900000));
     }
 
+    @Transactional
     public LoginResponse authenticateUser(LoginRequest loginRequest, String deviceInfo) {
-        log.debug("Authenticating user: {} from device: {}", loginRequest.getUsername(), deviceInfo);
-        Users user = userRepository.findByUsername(loginRequest.getUsername());
+        log.debug("Authenticating user with identifier: {} from device: {}", loginRequest.getIdentifier(), deviceInfo);
+
+        // Try to find user by username or email
+        Users user = userRepository.findByUsername(loginRequest.getIdentifier());
+        if (user == null) {
+            user = userRepository.findByEmail(loginRequest.getIdentifier());
+        }
         if (user == null || !passwordEncoder.matches(loginRequest.getPassword(), user.getPassword())) {
-            log.warn("Invalid credentials for username: {}", loginRequest.getUsername());
+            log.warn("Invalid credentials for identifier: {}", loginRequest.getIdentifier());
             throw new CustomException("Invalid credentials.", HttpStatus.UNAUTHORIZED);
         }
         if (Boolean.FALSE.equals(user.isEmailVerified())) {
-            log.warn("Email not verified for username: {}", loginRequest.getUsername());
+            log.warn("Email not verified for identifier: {}", loginRequest.getIdentifier());
             throw new CustomException("Email not verified.", HttpStatus.FORBIDDEN);
         }
 
-        String username = user.getUsername();
-        String preAuthToken = jwtTokenProvider.generatePreAuthToken(username); // Use pre-auth token
-        String refreshToken = jwtTokenProvider.generateRefreshToken(username);
+        String identifier = user.getUsername(); // Use username as the identifier for tokens
+        String preAuthToken = jwtTokenProvider.generatePreAuthToken(identifier);
+        String refreshToken = jwtTokenProvider.generateRefreshToken(identifier);
 
-        DeviceSession existingSession = refreshTokenStore.get(username);
+        DeviceSession existingSession = refreshTokenStore.get(identifier);
         if (existingSession != null && !existingSession.getDeviceInfo().equals(deviceInfo)) {
             blacklistService.blacklistToken(existingSession.getRefreshToken());
-            refreshTokenStore.remove(username);
+            refreshTokenStore.remove(identifier);
             try {
                 emailUtil.sendLoginAttemptNotification(user.getEmail(), deviceInfo);
-                log.info("Notified user {} of login attempt from new device: {}", username, deviceInfo);
-            } catch (MessagingException e) {
+                log.info("Notified user {} of login attempt from new device: {}", identifier, deviceInfo);
+            } catch (Exception e) {
                 log.error("Failed to send notification to {}: {}", user.getEmail(), e.getMessage());
             }
-            log.warn("Login attempt from new device rejected for user: {}", username);
             throw new CustomException("Another device is already logged in. Previous session invalidated.", HttpStatus.CONFLICT);
         }
 
-        refreshTokenStore.put(username, new DeviceSession(refreshToken, deviceInfo));
+        refreshTokenStore.put(identifier, new DeviceSession(refreshToken, deviceInfo));
 
-        // Force 2FA for all users, including newly registered ones
-        // Check if 2FA is enabled, if not, enable it automatically
+        // Ensure twoFactorEnabled is not null
+        if (user.isTwoFactorEnabled() == null) {
+            user.setTwoFactorEnabled(false);
+            userRepository.save(user);
+            log.info("Set twoFactorEnabled to false for user: {}", identifier);
+        }
+
+        // Force 2FA setup if not enabled
         if (!user.isTwoFactorEnabled()) {
             String secret = new DefaultSecretGenerator().generate();
             user.setTwoFactorSecret(secret);
             user.setTwoFactorEnabled(true);
             userRepository.save(user);
-            log.info("2FA automatically enabled for user: {}", username);
+            log.info("2FA automatically enabled for user: {}", identifier);
             try {
-                emailUtil.send2FAEnabledNotification(user.getEmail(), username);
-            } catch (MessagingException e) {
+                emailUtil.send2FAEnabledNotification(user.getEmail(), identifier);
+            } catch (Exception e) {
                 log.error("Failed to send 2FA enabled notification to {}: {}", user.getEmail(), e.getMessage());
             }
         }
 
-        pending2FALogins.put(username, preAuthToken);
-        log.info("2FA required, pre-auth token generated for {}: {}", username, preAuthToken);
-        return new LoginResponse(preAuthToken, true); // Always return pre-auth token, 2FA required
+        pending2FALogins.put(identifier, preAuthToken);
+        log.info("2FA required, pre-auth token generated for {}: {}", identifier, preAuthToken);
+        return new LoginResponse(preAuthToken, true);
     }
 
     public LoginResponse verify2FA(String username, String totpCode, String preAuthToken) {

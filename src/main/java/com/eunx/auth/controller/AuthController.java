@@ -19,6 +19,7 @@ import org.springframework.web.client.RestTemplate;
 
 import javax.mail.MessagingException;
 import javax.servlet.http.HttpServletRequest;
+import javax.validation.Valid;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -44,7 +45,7 @@ public class AuthController {
         this.restTemplate = restTemplate;
     }
     @PostMapping("/register")
-    public ResponseEntity<ApiResponse<String>> register(@RequestBody UserRequest userRequest) {
+    public ResponseEntity<ApiResponse<String>> register(@Valid @RequestBody UserRequest userRequest) {
         try {
             log.info("Registering new user with username: {}", userRequest.getUsername());
             userService.preRegisterUser(userRequest);
@@ -53,11 +54,11 @@ public class AuthController {
         } catch (CustomException e) {
             log.error("Registration failed for username: {}. Error: {}", userRequest.getUsername(), e.getMessage(), e);
             return ResponseEntity.status(e.getStatus())
-                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
+                    .body(new ApiResponse<>(null, e.getMessage(), e.getStatus().value()));
         } catch (Exception e) {
             log.error("Unexpected error during registration for username: {}", userRequest.getUsername(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(new ApiResponse<>("Registration failed: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()));
+                    .body(new ApiResponse<>(null, "Registration failed: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR.value()));
         }
     }
 
@@ -132,22 +133,19 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<ApiResponse<LoginResponse>> login(@RequestBody LoginRequest loginRequest,
-                                                            HttpServletRequest request) {
+    public ResponseEntity<ApiResponse<LoginResponse>> login(
+            @Valid @RequestBody LoginRequest loginRequest,
+            @RequestHeader(value = "User-Agent", defaultValue = "unknown") String deviceInfo) {
+        log.info("Login attempt with identifier: {}", loginRequest.getIdentifier());
         try {
-            String deviceInfo = getDeviceInfo(request);
-            log.info("Login attempt for username: {} from device: {}", loginRequest.getUsername(), deviceInfo);
-            LoginResponse loginResponse = userService.authenticateUser(loginRequest, deviceInfo);
-            String message = loginResponse.isRequires2FA() ?
-                    "Login successful, 2FA required" : "Login successful";
-            return ResponseEntity.ok(new ApiResponse<>(loginResponse, message, HttpStatus.OK.value()));
-        } catch (CustomException e) {
-            log.error("Login failed for username: {}. Error: {}", loginRequest.getUsername(), e.getMessage(), e);
-            return ResponseEntity.status(e.getStatus())
-                    .body(new ApiResponse<>(e.getMessage(), e.getStatus().value()));
+            LoginResponse response = userService.authenticateUser(loginRequest, deviceInfo);
+            return ResponseEntity.ok(new ApiResponse<>(response, "Login initiated", HttpStatus.OK.value()));
+        } catch (Exception e) {
+            log.error("Login failed for identifier: {}. Error: {}", loginRequest.getIdentifier(), e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(new ApiResponse<>(null, "Login failed: " + e.getMessage(), HttpStatus.UNAUTHORIZED.value()));
         }
     }
-
     @PostMapping("/refresh-token")
     public ResponseEntity<ApiResponse<LoginResponse>> refreshToken(@RequestBody RefreshTokenRequest refreshTokenRequest,
                                                                    HttpServletRequest request) {
