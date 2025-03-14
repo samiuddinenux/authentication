@@ -139,9 +139,16 @@ public class AuthController {
         log.info("Login attempt with identifier: {}", loginRequest.getIdentifier());
         try {
             LoginResponse response = userService.authenticateUser(loginRequest, deviceInfo);
-            return ResponseEntity.ok(new ApiResponse<>(response, "Login initiated", HttpStatus.OK.value()));
+
+            // If 2FA is required, the user needs to verify 2FA before getting full access
+            if (response.isRequires2FA()) {
+                log.info("2FA required for user: {}", loginRequest.getIdentifier());
+                return ResponseEntity.ok(new ApiResponse<>(response, "2FA verification required", HttpStatus.OK.value()));
+            }
+
+            return ResponseEntity.ok(new ApiResponse<>(response, "Login successful", HttpStatus.OK.value()));
         } catch (Exception e) {
-            log.error("Login failed for identifier: {}. Error: {}", loginRequest.getIdentifier(), e.getMessage());
+            log.error("Login failed for identifier: {}. Error: {}", loginRequest.getIdentifier(), e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(new ApiResponse<>(null, "Login failed: " + e.getMessage(), HttpStatus.UNAUTHORIZED.value()));
         }
@@ -168,11 +175,18 @@ public class AuthController {
     }
 
     @PostMapping("/verify-2fa")
-    public ResponseEntity<ApiResponse<LoginResponse>> verify2FA(@RequestParam String username,
-                                                                @RequestParam String totpCode,
-                                                                @RequestHeader("Authorization") String preAuthToken) {
+    public ResponseEntity<ApiResponse<LoginResponse>> verify2FA(
+            @RequestParam String username,
+            @RequestParam String totpCode,
+            @RequestHeader("Authorization") String preAuthToken) {
         try {
             log.info("Verifying 2FA for username: {}", username);
+
+            // Validate pre-auth token
+            if (!jwtTokenProvider.isPreAuthToken(preAuthToken.substring(7))) {
+                throw new CustomException("Invalid pre-auth token", HttpStatus.UNAUTHORIZED);
+            }
+
             LoginResponse loginResponse = userService.verify2FA(username, totpCode, preAuthToken.substring(7));
             return ResponseEntity.ok(new ApiResponse<>(loginResponse, "2FA verified, access granted", HttpStatus.OK.value()));
         } catch (CustomException e) {
@@ -199,11 +213,18 @@ public class AuthController {
         }
     }
     @PostMapping("/confirm-2fa")
-    public ResponseEntity<ApiResponse<String>> confirm2FA(@RequestHeader("Authorization") String token,
-                                                          @RequestParam String totpCode) {
+    public ResponseEntity<ApiResponse<String>> confirm2FA(
+            @RequestHeader("Authorization") String token,
+            @RequestParam String totpCode) {
         try {
             String username = jwtTokenProvider.getUsernameFromToken(token.substring(7));
             log.info("Confirming 2FA setup for username: {}", username);
+
+            // Validate token (assuming it's a full access token)
+            if (!jwtTokenProvider.validateToken(token.substring(7))) {
+                throw new CustomException("Invalid token", HttpStatus.UNAUTHORIZED);
+            }
+
             userService.confirm2FA(username, totpCode);
             return ResponseEntity.ok(new ApiResponse<>("2FA enabled successfully", "2FA confirmed", HttpStatus.OK.value()));
         } catch (CustomException e) {

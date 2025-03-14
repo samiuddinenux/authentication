@@ -44,27 +44,33 @@ public class UserService {
     private final Map<String, DeviceSession> refreshTokenStore = new HashMap<>();
     private final Map<String, String> pending2FASecrets = new HashMap<>();
 
-    public void preRegisterUser(UserRequest userRequest) throws MessagingException {
-        log.debug("Pre-registering user: {}", userRequest.getUsername());
-        if (!EmailUtil.isValidEmail(userRequest.getEmail())) {
-            log.warn("Invalid email format: {}", userRequest.getEmail());
-            throw new CustomException("Invalid email format.", HttpStatus.BAD_REQUEST);
-        }
+    @Transactional
+    public String preRegisterUser(UserRequest userRequest) {
         if (userRepository.findByUsername(userRequest.getUsername()) != null) {
-            log.warn("Username already taken: {}", userRequest.getUsername());
-            throw new CustomException("Username is already taken.", HttpStatus.CONFLICT);
+            throw new CustomException("Username already exists.", HttpStatus.CONFLICT);
         }
         if (userRepository.findByEmail(userRequest.getEmail()) != null) {
-            log.warn("Email already taken: {}", userRequest.getEmail());
-            throw new CustomException("Email is already taken.", HttpStatus.CONFLICT);
+            throw new CustomException("Email already exists.", HttpStatus.CONFLICT);
         }
-        pendingRegistrations.put(userRequest.getEmail(), userRequest);
+
+        // Set requires2FA to false by default
+        userRequest.setRequires2FA(false);
+
         String otp = generateOtp();
         otpStore.put(userRequest.getEmail(), otp);
-        emailUtil.sendOtpEmail(userRequest.getEmail(), otp);
-        log.info("OTP generated and sent to {}: {}", userRequest.getEmail(), otp);
-    }
+        pendingRegistrations.put(userRequest.getEmail(), userRequest);
 
+        try {
+            emailUtil.sendOtpEmail(userRequest.getEmail(), otp);
+            log.info("OTP generated and sent to {}: {}", userRequest.getEmail(), otp);
+            return "OTP sent to your email. Please verify to complete registration.";
+        } catch (Exception e) {
+            log.error("Failed to send OTP to {}: {}", userRequest.getEmail(), e.getMessage());
+            otpStore.remove(userRequest.getEmail());
+            pendingRegistrations.remove(userRequest.getEmail());
+            throw new CustomException("Failed to send OTP.", HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
     public void resendOtp(String email) throws MessagingException {
         log.debug("Resending OTP for email: {}", email);
         if (!pendingRegistrations.containsKey(email)) {
@@ -90,30 +96,33 @@ public class UserService {
         public String getDeviceInfo() { return deviceInfo; }
     }
 
+    @Transactional
     public String completeRegistration(String email, String otp) {
-        log.debug("Completing registration for email: {} with OTP: {}", email, otp);
-        if (otpStore.containsKey(email) && otpStore.get(email).equals(otp)) {
-            UserRequest pendingUser = pendingRegistrations.get(email);
-            if (pendingUser == null) {
-                log.warn("No pending registration found for email: {}", email);
-                throw new CustomException("No pending registration found.", HttpStatus.BAD_REQUEST);
-            }
-            Users user = new Users();
-            user.setUsername(pendingUser.getUsername());
-            user.setEmail(pendingUser.getEmail());
-            user.setPassword(passwordEncoder.encode(pendingUser.getPassword()));
-            user.setRoles(Collections.singletonList("ROLE_USER"));
-            user.setEmailVerified(true);
-            user.setTwoFactorEnabled(false); // Explicitly set to false for new users
-            user.setTwoFactorSecret(null);   // Optional: set to null or generate if needed later
-            userRepository.save(user);
-            pendingRegistrations.remove(email);
-            otpStore.remove(email);
-            log.info("User registered successfully: {}", pendingUser.getUsername());
-            return "User registered successfully! Please set up 2FA during your first login.";
+        if (!otpStore.containsKey(email) || !otpStore.get(email).equals(otp)) {
+            log.warn("Invalid OTP for email: {}", email);
+            throw new CustomException("Invalid OTP.", HttpStatus.BAD_REQUEST);
         }
-        log.warn("Invalid OTP for email: {}", email);
-        throw new CustomException("Invalid OTP.", HttpStatus.BAD_REQUEST);
+
+        UserRequest pendingUser = pendingRegistrations.get(email);
+        if (pendingUser == null) {
+            throw new CustomException("No pending registration found.", HttpStatus.BAD_REQUEST);
+        }
+
+        Users user = new Users();
+        user.setUsername(pendingUser.getUsername());
+        user.setEmail(pendingUser.getEmail());
+        user.setPassword(passwordEncoder.encode(pendingUser.getPassword()));
+        user.setRoles(Collections.singletonList("ROLE_USER"));
+        user.setEmailVerified(true);
+        user.setTwoFactorEnabled(false); // Default to false
+        // Set requires2FA to false initially
+        user.setRequires2FA(false);
+        userRepository.save(user);
+
+        pendingRegistrations.remove(email);
+        otpStore.remove(email);
+        log.info("User registered successfully: {}", pendingUser.getUsername());
+        return "User registered successfully!";
     }
 
     public LoginResponse refreshAccessToken(String refreshToken, String deviceInfo) {
@@ -154,10 +163,14 @@ public class UserService {
         if (user == null) {
             user = userRepository.findByEmail(loginRequest.getIdentifier());
         }
+
+        // Invalid credentials check
         if (user == null || !passwordEncoder.matches(loginRequest.getPassword(), user.getPassword())) {
             log.warn("Invalid credentials for identifier: {}", loginRequest.getIdentifier());
             throw new CustomException("Invalid credentials.", HttpStatus.UNAUTHORIZED);
         }
+
+        // Email verification check
         if (Boolean.FALSE.equals(user.isEmailVerified())) {
             log.warn("Email not verified for identifier: {}", loginRequest.getIdentifier());
             throw new CustomException("Email not verified.", HttpStatus.FORBIDDEN);
@@ -167,10 +180,12 @@ public class UserService {
         String preAuthToken = jwtTokenProvider.generatePreAuthToken(identifier);
         String refreshToken = jwtTokenProvider.generateRefreshToken(identifier);
 
+        // Check for existing session and handle blacklist
         DeviceSession existingSession = refreshTokenStore.get(identifier);
         if (existingSession != null && !existingSession.getDeviceInfo().equals(deviceInfo)) {
             blacklistService.blacklistToken(existingSession.getRefreshToken());
             refreshTokenStore.remove(identifier);
+
             try {
                 emailUtil.sendLoginAttemptNotification(user.getEmail(), deviceInfo);
                 log.info("Notified user {} of login attempt from new device: {}", identifier, deviceInfo);
@@ -182,7 +197,7 @@ public class UserService {
 
         refreshTokenStore.put(identifier, new DeviceSession(refreshToken, deviceInfo));
 
-        // Ensure twoFactorEnabled is not null
+        // Ensure 'twoFactorEnabled' is not null, defaulting to false
         if (user.isTwoFactorEnabled() == null) {
             user.setTwoFactorEnabled(false);
             userRepository.save(user);
@@ -193,20 +208,25 @@ public class UserService {
         if (!user.isTwoFactorEnabled()) {
             String secret = new DefaultSecretGenerator().generate();
             user.setTwoFactorSecret(secret);
-            user.setTwoFactorEnabled(true);
+            user.setTwoFactorEnabled(false);
             userRepository.save(user);
-            log.info("2FA automatically enabled for user: {}", identifier);
+            pending2FASecrets.put(user.getUsername(), secret); // Add to pending secrets
             try {
                 emailUtil.send2FAEnabledNotification(user.getEmail(), identifier);
+                log.info("Sent 2FA setup email to {}: {}", user.getEmail(), identifier);
             } catch (Exception e) {
-                log.error("Failed to send 2FA enabled notification to {}: {}", user.getEmail(), e.getMessage());
+                log.error("Failed to send 2FA setup notification to {}: {}", user.getEmail(), e.getMessage());
             }
         }
-
+        // Put pre-auth token in pending 2FA logins map
         pending2FALogins.put(identifier, preAuthToken);
         log.info("2FA required, pre-auth token generated for {}: {}", identifier, preAuthToken);
-        return new LoginResponse(preAuthToken, true);
+
+        // Ensure requires2FA is correctly set in the response
+        log.info("User requires2FA: {}", user.isRequires2FA());
+        return new LoginResponse(preAuthToken, user.isRequires2FA());  // Return false for 2FA being required
     }
+
 
     public LoginResponse verify2FA(String username, String totpCode, String preAuthToken) {
         log.debug("Verifying 2FA for username: {} with code: {}", username, totpCode);
@@ -267,6 +287,7 @@ public class UserService {
         return secret; // Return secret for QR code generation
     }
 
+    @Transactional
     public void confirm2FA(String username, String totpCode) {
         log.debug("Confirming 2FA setup for username: {} with code: {}", username, totpCode);
         Users user = userRepository.findByUsername(username);
@@ -279,28 +300,25 @@ public class UserService {
             throw new CustomException("2FA is already enabled.", HttpStatus.BAD_REQUEST);
         }
 
-        // Retrieve the pending secret
         String secret = pending2FASecrets.get(username);
         if (secret == null) {
             log.warn("No pending 2FA setup found for username: {}", username);
             throw new CustomException("No pending 2FA setup found.", HttpStatus.BAD_REQUEST);
         }
 
-        // Verify the TOTP code
         boolean isValidCode = verifyTotpCode(secret, totpCode);
         if (!isValidCode) {
             log.warn("Invalid 2FA code during setup for username: {}", username);
             throw new CustomException("Invalid 2FA code.", HttpStatus.UNAUTHORIZED);
         }
 
-        // If valid, save the secret and enable 2FA
         user.setTwoFactorSecret(secret);
         user.setTwoFactorEnabled(true);
+        user.setRequires2FA(true); // Set requires2FA to true
         userRepository.save(user);
-        pending2FASecrets.remove(username); // Clean up
-        log.info("2FA setup confirmed and enabled for username: {}", username);
+        log.info("2FA setup confirmed for username: {}. requires2FA set to: {}", username, user.isRequires2FA());
+        pending2FASecrets.remove(username);
     }
-
     public void disable2FA(String username) {
         log.debug("Disabling 2FA for username: {}", username);
         Users user = userRepository.findByUsername(username);

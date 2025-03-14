@@ -32,9 +32,8 @@ public class Users {
     @Column(name = "two_factor_secret")
     private String twoFactorSecret;
 
-    // Constructors
-    public Users() {
-    }
+    @Column(name = "requires_2fa", nullable = false)
+    private Boolean requires2FA = false; // Default to false
 
     // Getters and Setters
     public Long getId() { return id; }
@@ -56,5 +55,11 @@ public class Users {
         this.twoFactorEnabled = twoFactorEnabled != null ? twoFactorEnabled : false;
     }
     public String getTwoFactorSecret() { return twoFactorSecret; }
-    public void setTwoFactorSecret(String twoFactorSecret) { this.twoFactorSecret = twoFactorSecret; }
+    public void setTwoFactorSecret(String twoFactorSecret) {
+        this.twoFactorSecret = twoFactorSecret;
+    }
+    public Boolean isRequires2FA() { return requires2FA; }
+    public void setRequires2FA(Boolean requires2FA) {
+        this.requires2FA = requires2FA != null ? requires2FA : false;
+    }
 }
